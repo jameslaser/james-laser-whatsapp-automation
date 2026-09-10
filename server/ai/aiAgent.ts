@@ -29,7 +29,7 @@ export class AiAgent {
     }
 
     const context = await buildConversationContext(this.contextRepository, conversation);
-    const reply = await this.gemini.generateReply(context, userText, Object.values(aiTools), this.tools);
+    const reply = await this.gemini.generateReply(context, userText, Object.values(aiTools), this.tools, conversationId);
     if (reply.shouldEscalate) await this.conversations.pauseAi(conversationId);
     return { escalated: reply.shouldEscalate, text: reply.text, toolCalls: reply.toolCalls } as const;
   }
