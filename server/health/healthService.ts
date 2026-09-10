@@ -13,9 +13,11 @@ export async function runHealthChecks(): Promise<HealthCheck[]> {
     catch (error) { results.push({ name: "database", status: "error", detail: error instanceof Error ? error.message : "Database health check failed", checkedAt }); }
   }
   results.push({ name: "gemini", status: isGeminiConfigured() ? "ok" : "not_configured", detail: isGeminiConfigured() ? "Server-side Gemini API key is configured." : "GEMINI_API_KEY is not configured.", checkedAt });
-  const whatsapp = getOptionalWhatsAppConfig();
-  if (!whatsapp) results.push({ name: "whatsapp", status: "not_configured", detail: "WhatsApp server variables are incomplete or canonical identity is not configured.", checkedAt });
-  else {
+  let whatsapp: ReturnType<typeof getOptionalWhatsAppConfig> = null;
+  try { whatsapp = getOptionalWhatsAppConfig(); }
+  catch (error) { results.push({ name: "whatsapp", status: "error", detail: error instanceof Error ? error.message : "WhatsApp configuration is invalid", checkedAt }); }
+  if (!whatsapp && !results.some(result => result.name === "whatsapp")) results.push({ name: "whatsapp", status: "not_configured", detail: "WhatsApp server variables are incomplete.", checkedAt });
+  if (whatsapp) {
     try { await axios.get(`https://graph.facebook.com/${whatsapp.graphApiVersion}/${whatsapp.phoneNumberId}`, { headers: { Authorization: `Bearer ${whatsapp.accessToken}` }, timeout: 10_000 }); results.push({ name: "whatsapp", status: "ok", detail: "Cloud API responded for the configured phone number ID.", checkedAt }); }
     catch (error) { results.push({ name: "whatsapp", status: "error", detail: error instanceof Error ? error.message : "Cloud API health check failed", checkedAt }); }
   }
