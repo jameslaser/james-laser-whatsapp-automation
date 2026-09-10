@@ -42,11 +42,7 @@ function localDateParts(date: Date, timezone: string) {
     hourCycle: "h23",
   }).formatToParts(date);
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
-  return {
-    date: `${values.year}-${values.month}-${values.day}`,
-    hour: Number(values.hour),
-    minute: Number(values.minute),
-  };
+  return { date: `${values.year}-${values.month}-${values.day}`, hour: Number(values.hour), minute: Number(values.minute) };
 }
 
 export function parseRiyadhDateTime(date: string, time: string): Date {
@@ -55,15 +51,11 @@ export function parseRiyadhDateTime(date: string, time: string): Date {
   const value = new Date(`${date}T${time}:00+03:00`);
   if (Number.isNaN(value.getTime())) throw new Error("Invalid Riyadh date/time");
   const local = localDateParts(value, "Asia/Riyadh");
-  if (`${local.date}T${String(local.hour).padStart(2, "0")}:${String(local.minute).padStart(2, "0")}` !== `${date}T${time}`) {
-    throw new Error("Invalid Riyadh date/time");
-  }
+  if (`${local.date}T${String(local.hour).padStart(2, "0")}:${String(local.minute).padStart(2, "0")}` !== `${date}T${time}`) throw new Error("Invalid Riyadh date/time");
   return value;
 }
 
-export function parseRiyadhDate(date: string): Date {
-  return parseRiyadhDateTime(date, "13:00");
-}
+export function parseRiyadhDate(date: string): Date { return parseRiyadhDateTime(date, "13:00"); }
 
 function addRiyadhMinutes(date: string, minutes: number): Date {
   const hour = Math.floor(minutes / 60);
@@ -79,9 +71,7 @@ export class AppointmentService {
     private readonly policy = DEFAULT_APPOINTMENT_POLICY,
   ) {}
 
-  calculateDuration(treatmentCode: string) {
-    return this.treatments.calculateDuration(treatmentCode);
-  }
+  calculateDuration(treatmentCode: string) { return this.treatments.calculateDuration(treatmentCode); }
 
   checkBusinessHours(startsAt: Date, endsAt: Date): boolean {
     const start = localDateParts(startsAt, this.policy.timezone);
@@ -100,6 +90,7 @@ export class AppointmentService {
     if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) throw new Error("A positive treatment duration is required");
     const endsAt = new Date(startsAt.getTime() + durationMinutes * 60_000);
     const reasons: string[] = [];
+    if (startsAt.getTime() <= Date.now()) reasons.push("Requested time is in the past");
     if (!this.checkBusinessHours(startsAt, endsAt)) reasons.push("Requested time is outside clinic hours");
     if (!this.isValidSlot(startsAt)) reasons.push("Requested time is not aligned to the 15-minute slot interval");
     const [appointmentConflicts, nurseConflicts, machineNames] = await Promise.all([
@@ -122,12 +113,7 @@ export class AppointmentService {
     for (let minutes = openingMinutes; minutes + duration <= closingMinutes; minutes += this.policy.slotIntervalMinutes) {
       const cursor = addRiyadhMinutes(dateParts.date, minutes);
       const result = await this.checkAvailability(cursor, duration);
-      slots.push({
-        startsAt: cursor,
-        endsAt: new Date(cursor.getTime() + duration * 60_000),
-        available: result.available,
-        machineNames: result.machineNames as AvailabilitySlot["machineNames"],
-      });
+      slots.push({ startsAt: cursor, endsAt: new Date(cursor.getTime() + duration * 60_000), available: result.available, machineNames: result.machineNames as AvailabilitySlot["machineNames"] });
     }
     return slots.filter(slot => slot.available);
   }
