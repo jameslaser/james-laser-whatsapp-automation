@@ -18,32 +18,10 @@ export type AppointmentStatus = (typeof APPOINTMENT_STATUSES)[number];
 
 export type SupportedMessageKind = "text" | "interactive" | "image" | "audio" | "document" | "unknown";
 
-export interface WhatsAppMessageInput {
-  to: string;
-  text: string;
-  previewUrl?: boolean;
-}
-
-export interface WhatsAppTemplateInput {
-  to: string;
-  templateName: string;
-  languageCode: string;
-  components?: unknown[];
-}
-
-export interface WhatsAppInteractiveInput {
-  to: string;
-  interactive: Record<string, unknown>;
-}
-
-export interface WhatsAppMediaInput {
-  to: string;
-  mediaType: "image" | "audio" | "video" | "document";
-  mediaId?: string;
-  link?: string;
-  caption?: string;
-  filename?: string;
-}
+export interface WhatsAppMessageInput { to: string; text: string; previewUrl?: boolean; }
+export interface WhatsAppTemplateInput { to: string; templateName: string; languageCode: string; components?: unknown[]; }
+export interface WhatsAppInteractiveInput { to: string; interactive: Record<string, unknown>; }
+export interface WhatsAppMediaInput { to: string; mediaType: "image" | "audio" | "video" | "document"; mediaId?: string; link?: string; caption?: string; filename?: string; }
 
 export interface IncomingMessageEvent {
   eventId: string;
@@ -57,22 +35,8 @@ export interface IncomingMessageEvent {
   raw: Record<string, unknown>;
 }
 
-export interface AppointmentDraft {
-  customerId: string;
-  provider?: string;
-  treatmentCode: string;
-  startsAt: Date;
-  durationMinutes: number;
-  machineName?: MachineName;
-  status?: AppointmentStatus;
-}
-
-export interface AvailabilitySlot {
-  startsAt: Date;
-  endsAt: Date;
-  available: boolean;
-  machineNames: MachineName[];
-}
+export interface AppointmentDraft { customerId: string; provider?: string; treatmentCode: string; startsAt: Date; durationMinutes: number; machineName?: MachineName; status?: AppointmentStatus; }
+export interface AvailabilitySlot { startsAt: Date; endsAt: Date; available: boolean; machineNames: MachineName[]; }
 
 export interface AutomationJob {
   id?: string;
@@ -84,11 +48,8 @@ export interface AutomationJob {
   error?: string;
   completedAt?: Date;
   idempotencyKey: string;
+  appointmentId?: string;
+  contactId?: string;
 }
 
-export interface HealthCheck {
-  name: string;
-  status: "ok" | "degraded" | "not_configured" | "error";
-  detail?: string;
-  checkedAt: Date;
-}
+export interface HealthCheck { name: string; status: "ok" | "degraded" | "not_configured" | "error"; detail?: string; checkedAt: Date; }
