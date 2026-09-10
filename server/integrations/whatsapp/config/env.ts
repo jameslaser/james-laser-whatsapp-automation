@@ -16,10 +16,14 @@ function required(name: string): string {
 }
 
 export function getWhatsAppConfig(): WhatsAppConfig {
+  const businessAccountId = required("WHATSAPP_BUSINESS_ACCOUNT_ID");
+  if (businessAccountId !== CANONICAL_WHATSAPP.wabaId) {
+    throw new Error(`WHATSAPP_BUSINESS_ACCOUNT_ID must match canonical WABA ${CANONICAL_WHATSAPP.wabaId}`);
+  }
   return {
     accessToken: required("WHATSAPP_ACCESS_TOKEN"),
     phoneNumberId: required("WHATSAPP_PHONE_NUMBER_ID"),
-    businessAccountId: required("WHATSAPP_BUSINESS_ACCOUNT_ID"),
+    businessAccountId,
     verifyToken: required("WHATSAPP_VERIFY_TOKEN"),
     metaAppSecret: required("META_APP_SECRET"),
     graphApiVersion: process.env.META_GRAPH_API_VERSION?.trim() || "v23.0",
@@ -27,13 +31,7 @@ export function getWhatsAppConfig(): WhatsAppConfig {
 }
 
 export function getOptionalWhatsAppConfig(): WhatsAppConfig | null {
-  const names = [
-    "WHATSAPP_ACCESS_TOKEN",
-    "WHATSAPP_PHONE_NUMBER_ID",
-    "WHATSAPP_BUSINESS_ACCOUNT_ID",
-    "WHATSAPP_VERIFY_TOKEN",
-    "META_APP_SECRET",
-  ];
+  const names = ["WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_BUSINESS_ACCOUNT_ID", "WHATSAPP_VERIFY_TOKEN", "META_APP_SECRET"];
   return names.every(name => Boolean(process.env[name]?.trim())) ? getWhatsAppConfig() : null;
 }
 
