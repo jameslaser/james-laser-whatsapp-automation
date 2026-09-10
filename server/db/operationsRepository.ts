@@ -6,6 +6,7 @@ import type { AppointmentRecord, AppointmentRepository } from "../appointments/a
 import type { MachineRepository, MachineReservation } from "../appointments/machineService";
 import { AUTOMATION_RECOVERY_MINUTES, MAX_AUTOMATION_ATTEMPTS, type AutomationRepository } from "../automation/automationService";
 import type { ContactRepository, ResolvedContact } from "../integrations/whatsapp/contacts/contactResolver";
+import { normalizeWhatsAppNumber } from "../integrations/whatsapp/contacts/contactResolver";
 import type { ConversationRecord, ConversationRepository } from "../integrations/whatsapp/conversations/conversationService";
 import type { ContextMessage } from "../ai/conversationContext";
 import type { AgentContextRepository } from "../ai/aiAgent";
@@ -20,7 +21,6 @@ export class DatabaseContactRepository implements ContactRepository {
   async findByWhatsAppNumber(phoneNumber: string): Promise<ResolvedContact | null> { const db = await database(); const rows = await db.select().from(whatsappContacts).where(eq(whatsappContacts.phoneNumber, phoneNumber)).limit(1); const row = rows[0]; if (!row) return null; return { id: String(row.id), phoneNumber: row.phoneNumber, kind: row.patientId ? "patient" : "lead", created: false }; }
   async createLeadFromWhatsApp(phoneNumber: string): Promise<ResolvedContact> { const db = await database(); return db.transaction(async (tx: any) => { const existing = await tx.select().from(whatsappContacts).where(eq(whatsappContacts.phoneNumber, phoneNumber)).limit(1); if (existing[0]) return { id: String(existing[0].id), phoneNumber, kind: existing[0].patientId ? "patient" : "lead", created: false }; const lead = await tx.insert(leads).values({ phoneNumber, source: "whatsapp", status: "new" }); const leadId = Number(lead[0]?.insertId); const contact = await tx.insert(whatsappContacts).values({ phoneNumber, leadId: leadId || undefined, optedOut: false }); return { id: String(contact[0]?.insertId), phoneNumber, kind: "lead", created: true }; }); }
 }
-
 export class DatabaseConversationRepository implements ConversationRepository, AgentContextRepository {
   async list(limit = 50): Promise<ConversationRecord[]> { const db = await database(); const rows = await db.select().from(whatsappConversations).orderBy(desc(whatsappConversations.lastActivityAt)).limit(Math.min(Math.max(limit, 1), 100)); return rows.map(toConversation); }
   async findOpenByContact(contactId: string): Promise<ConversationRecord | null> { const db = await database(); const rows = await db.select().from(whatsappConversations).where(and(eq(whatsappConversations.contactId, Number(contactId)), or(eq(whatsappConversations.status, "AI_ACTIVE"), eq(whatsappConversations.status, "HUMAN_REQUIRED"), eq(whatsappConversations.status, "HUMAN_ACTIVE")))).orderBy(desc(whatsappConversations.lastActivityAt)).limit(1); return rows[0] ? toConversation(rows[0]) : null; }
@@ -31,12 +31,11 @@ export class DatabaseConversationRepository implements ConversationRepository, A
   async getRecentMessages(conversationId: string, limit: number): Promise<ContextMessage[]> { const db = await database(); const rows = await db.select().from(whatsappMessages).where(eq(whatsappMessages.conversationId, Number(conversationId))).orderBy(desc(whatsappMessages.createdAt)).limit(Math.min(Math.max(limit, 1), 100)); return rows.reverse().filter((row: any) => row.body).map((row: any) => ({ role: row.direction === "OUTBOUND" ? "assistant" : "user", content: String(row.body) })); }
   async getVerifiedFacts(_conversationId: string): Promise<Record<string, unknown>> { return {}; }
 }
-
 export class DatabaseMessageRepository implements MessageRepository {
   async hasWebhookEvent(eventId: string): Promise<boolean> { const db = await database(); const rows = await db.select({ id: whatsappWebhookEvents.id }).from(whatsappWebhookEvents).where(eq(whatsappWebhookEvents.eventId, eventId)).limit(1); return Boolean(rows[0]); }
   async recordWebhookEvent(eventId: string, payload: Record<string, unknown>): Promise<void> { const db = await database(); await db.insert(whatsappWebhookEvents).values({ eventId, payload }); }
   async saveIncomingMessage(event: IncomingMessageEvent, contactId: string, conversationId: string): Promise<void> { const db = await database(); await db.insert(whatsappMessages).values({ conversationId: Number(conversationId), contactId: Number(contactId), waMessageId: event.waMessageId, direction: "INBOUND", kind: event.kind, body: event.text, mediaId: event.mediaId, status: "received", rawPayload: event.raw }); }
-  async saveOutgoingMessage(input: { waMessageId: string; to: string; conversationId?: string; payload: Record<string, unknown>; status: string }): Promise<void> { const db = await database(); const contact = await db.select().from(whatsappContacts).where(eq(whatsappContacts.phoneNumber, input.to)).limit(1); if (!contact[0]) throw new Error("Cannot persist outgoing message: WhatsApp contact does not exist"); if (!input.conversationId) throw new Error("Cannot persist outgoing message: conversationId is required"); await db.insert(whatsappMessages).values({ conversationId: Number(input.conversationId), contactId: contact[0].id, waMessageId: input.waMessageId, direction: "OUTBOUND", kind: "text", body: typeof input.payload.text === "string" ? input.payload.text : undefined, status: input.status, rawPayload: input.payload }); await db.update(whatsappConversations).set({ lastActivityAt: new Date() }).where(eq(whatsappConversations.id, Number(input.conversationId))); }
+  async saveOutgoingMessage(input: { waMessageId: string; to: string; conversationId?: string; payload: Record<string, unknown>; status: string }): Promise<void> { const db = await database(); const normalizedTo = normalizeWhatsAppNumber(input.to); const contact = await db.select().from(whatsappContacts).where(eq(whatsappContacts.phoneNumber, normalizedTo)).limit(1); if (!contact[0]) throw new Error("Cannot persist outgoing message: WhatsApp contact does not exist"); if (!input.conversationId) throw new Error("Cannot persist outgoing message: conversationId is required"); await db.insert(whatsappMessages).values({ conversationId: Number(input.conversationId), contactId: contact[0].id, waMessageId: input.waMessageId, direction: "OUTBOUND", kind: "text", body: typeof input.payload.text === "string" ? input.payload.text : undefined, status: input.status, rawPayload: input.payload }); await db.update(whatsappConversations).set({ lastActivityAt: new Date() }).where(eq(whatsappConversations.id, Number(input.conversationId))); }
   async updateMessageStatus(waMessageId: string, status: string, raw: Record<string, unknown>): Promise<void> { const db = await database(); await db.update(whatsappMessages).set({ status, rawPayload: raw }).where(eq(whatsappMessages.waMessageId, waMessageId)); }
 }
 function toAppointment(row: any): AppointmentRecord { return { id: String(row.id), customerId: String(row.patientId || row.leadId || ""), provider: normalizeProvider(row.provider || "NR011"), treatmentCode: row.treatmentCode, startsAt: new Date(row.startsAt), endsAt: new Date(row.endsAt), durationMinutes: Math.round((new Date(row.endsAt).getTime() - new Date(row.startsAt).getTime()) / 60000), machineName: normalizeMachine(row.machineName), status: row.status }; }
@@ -49,39 +48,10 @@ export class DatabaseMachineRepository implements MachineRepository {
 export class DatabaseAppointmentRepository implements AppointmentRepository {
   async listConflicts(startsAt: Date, endsAt: Date, excludeId?: string): Promise<AppointmentRecord[]> { const db = await database(); const rows = await db.select().from(appointments).where(and(lt(appointments.startsAt, endsAt), gt(appointments.endsAt, startsAt))); return rows.filter((row: any) => String(row.id) !== excludeId).map(toAppointment); }
   async listNurseConflicts(startsAt: Date, endsAt: Date): Promise<AppointmentRecord[]> { return this.listConflicts(startsAt, endsAt); }
-  async create(input: AppointmentDraft & { endsAt: Date; machineName: NonNullable<AppointmentDraft["machineName"]> }): Promise<AppointmentRecord> {
-    const db = await database();
-    const provider = normalizeProvider(input.provider || process.env.HMS_PROVIDER || "NR011");
-    return db.transaction(async (tx: any) => {
-      const conflicts = await tx.select().from(appointments).where(and(lt(appointments.startsAt, input.endsAt), gt(appointments.endsAt, input.startsAt))).for("update");
-      if (conflicts.length) throw new Error("Appointment conflict detected");
-      const machineConflicts = conflicts.filter((row: any) => normalizeMachine(row.machineName) === normalizeMachine(input.machineName));
-      if (machineConflicts.length) throw new Error("Machine conflict detected");
-      const blocked = await tx.select().from(availabilities).where(and(eq(availabilities.kind, "BLOCKED"), eq(availabilities.machineName, normalizeMachine(input.machineName)), lt(availabilities.startsAt, input.endsAt), gt(availabilities.endsAt, input.startsAt))).for("update");
-      if (blocked.length) throw new Error("Machine is blocked for the requested time");
-      const result = await tx.insert(appointments).values({ patientId: Number(input.customerId) || undefined, provider, treatmentCode: input.treatmentCode, startsAt: input.startsAt, endsAt: input.endsAt, machineName: normalizeMachine(input.machineName), status: "Confirmed" });
-      const rows = await tx.select().from(appointments).where(eq(appointments.id, Number(result[0]?.insertId))).limit(1);
-      if (!rows[0]) throw new Error("Appointment was not created");
-      return toAppointment(rows[0]);
-    });
-  }
+  async create(input: AppointmentDraft & { endsAt: Date; machineName: NonNullable<AppointmentDraft["machineName"]> }): Promise<AppointmentRecord> { const db = await database(); const provider = normalizeProvider(input.provider || process.env.HMS_PROVIDER || "NR011"); return db.transaction(async (tx: any) => { const conflicts = await tx.select().from(appointments).where(and(lt(appointments.startsAt, input.endsAt), gt(appointments.endsAt, input.startsAt))).for("update"); if (conflicts.length) throw new Error("Appointment conflict detected"); const blocked = await tx.select().from(availabilities).where(and(eq(availabilities.kind, "BLOCKED"), eq(availabilities.machineName, normalizeMachine(input.machineName)), lt(availabilities.startsAt, input.endsAt), gt(availabilities.endsAt, input.startsAt))).for("update"); if (blocked.length) throw new Error("Machine is blocked for the requested time"); const result = await tx.insert(appointments).values({ patientId: Number(input.customerId) || undefined, provider, treatmentCode: input.treatmentCode, startsAt: input.startsAt, endsAt: input.endsAt, machineName: normalizeMachine(input.machineName), status: "Confirmed" }); const rows = await tx.select().from(appointments).where(eq(appointments.id, Number(result[0]?.insertId))).limit(1); if (!rows[0]) throw new Error("Appointment was not created"); return toAppointment(rows[0]); }); }
   async confirm(id: string): Promise<AppointmentRecord> { return this.setStatus(id, "Confirmed"); }
   async cancel(_id: string): Promise<AppointmentRecord> { throw new Error("Cancelled is not an allowed appointment status under the active HMS policy"); }
-  async reschedule(id: string, startsAt: Date, endsAt: Date): Promise<AppointmentRecord> {
-    const db = await database();
-    return db.transaction(async (tx: any) => {
-      const current = (await tx.select().from(appointments).where(eq(appointments.id, Number(id))).for("update").limit(1))[0];
-      if (!current) throw new Error("Appointment not found");
-      const conflicts = await tx.select().from(appointments).where(and(lt(appointments.startsAt, endsAt), gt(appointments.endsAt, startsAt))).for("update");
-      if (conflicts.some((row: any) => String(row.id) !== id)) throw new Error("Appointment conflict detected");
-      const machine = normalizeMachine(current.machineName);
-      const blocked = await tx.select().from(availabilities).where(and(eq(availabilities.kind, "BLOCKED"), eq(availabilities.machineName, machine), lt(availabilities.startsAt, endsAt), gt(availabilities.endsAt, startsAt))).for("update");
-      if (blocked.length) throw new Error("Machine is blocked for the requested time");
-      await tx.update(appointments).set({ startsAt, endsAt }).where(eq(appointments.id, Number(id)));
-      const rows = await tx.select().from(appointments).where(eq(appointments.id, Number(id))).limit(1);
-      return toAppointment(rows[0]);
-    });
-  }
+  async reschedule(id: string, startsAt: Date, endsAt: Date): Promise<AppointmentRecord> { const db = await database(); return db.transaction(async (tx: any) => { const current = (await tx.select().from(appointments).where(eq(appointments.id, Number(id))).for("update").limit(1))[0]; if (!current) throw new Error("Appointment not found"); const conflicts = await tx.select().from(appointments).where(and(lt(appointments.startsAt, endsAt), gt(appointments.endsAt, startsAt))).for("update"); if (conflicts.some((row: any) => String(row.id) !== id)) throw new Error("Appointment conflict detected"); const machine = normalizeMachine(current.machineName); const blocked = await tx.select().from(availabilities).where(and(eq(availabilities.kind, "BLOCKED"), eq(availabilities.machineName, machine), lt(availabilities.startsAt, endsAt), gt(availabilities.endsAt, startsAt))).for("update"); if (blocked.length) throw new Error("Machine is blocked for the requested time"); await tx.update(appointments).set({ startsAt, endsAt }).where(eq(appointments.id, Number(id))); const rows = await tx.select().from(appointments).where(eq(appointments.id, Number(id))).limit(1); return toAppointment(rows[0]); }); }
   private async setStatus(id: string, status: "Confirmed" | "Arrived" | "Completed"): Promise<AppointmentRecord> { const db = await database(); await db.update(appointments).set({ status }).where(eq(appointments.id, Number(id))); const rows = await db.select().from(appointments).where(eq(appointments.id, Number(id))).limit(1); if (!rows[0]) throw new Error("Appointment not found"); return toAppointment(rows[0]); }
 }
 export class DatabaseAutomationRepository implements AutomationRepository {
