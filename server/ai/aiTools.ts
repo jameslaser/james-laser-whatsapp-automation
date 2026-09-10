@@ -6,10 +6,39 @@ export interface AiToolContext {
   requestHumanHandoff(reason: string): Promise<void>;
 }
 
+export type AiToolName = "getVerifiedTreatment" | "checkAvailability" | "requestHumanHandoff";
+
 export const aiTools = {
-  getVerifiedTreatment: { name: "getVerifiedTreatment", description: "Retrieve treatment data from the application database. Never infer prices, durations, or package inclusions." },
-  checkAvailability: { name: "checkAvailability", description: "Retrieve available slots from the appointment service. Never invent availability." },
-  requestHumanHandoff: { name: "requestHumanHandoff", description: "Pause AI and route a conversation to human staff." },
+  getVerifiedTreatment: {
+    name: "getVerifiedTreatment",
+    description: "Retrieve treatment data from the application database. Never infer prices, durations, or package inclusions.",
+    parameters: {
+      type: "OBJECT",
+      properties: { treatmentCode: { type: "STRING", description: "Exact treatment code from the approved catalog." } },
+      required: ["treatmentCode"],
+    },
+  },
+  checkAvailability: {
+    name: "checkAvailability",
+    description: "Retrieve available appointment slots for a treatment on a specific Riyadh date. Never invent availability.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        treatmentCode: { type: "STRING", description: "Exact treatment code from the approved catalog." },
+        date: { type: "STRING", description: "Clinic date in YYYY-MM-DD format, Riyadh local date." },
+      },
+      required: ["treatmentCode", "date"],
+    },
+  },
+  requestHumanHandoff: {
+    name: "requestHumanHandoff",
+    description: "Pause AI and route a conversation to human staff when the customer requests a human or the topic is sensitive.",
+    parameters: {
+      type: "OBJECT",
+      properties: { reason: { type: "STRING", description: "Short reason for the handoff." } },
+      required: ["reason"],
+    },
+  },
 } as const;
 
 export function isEscalationRequest(text: string): boolean {
