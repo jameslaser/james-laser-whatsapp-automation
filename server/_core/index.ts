@@ -3,6 +3,7 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import { eq } from "drizzle-orm";
 import { registerOAuthRoutes } from "./oauth";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
@@ -22,27 +23,16 @@ import { AppointmentService } from "../appointments/appointmentService";
 import { MachineService } from "../appointments/machineService";
 import { AutomationService } from "../automation/automationService";
 import { TreatmentCatalog } from "../appointments/treatments";
+import { getDb } from "../db";
+import { whatsappContacts } from "../../drizzle/schema";
 import { DatabaseAppointmentRepository, DatabaseAutomationRepository, DatabaseContactRepository, DatabaseConversationRepository, DatabaseMachineRepository, DatabaseMessageRepository } from "../db/operationsRepository";
+import type { AutomationJob } from "../types/operations";
 
-function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise(resolve => {
-    const server = net.createServer();
-    server.listen(port, () => server.close(() => resolve(true)));
-    server.on("error", () => resolve(false));
-  });
-}
-
-async function findAvailablePort(startPort = 3000): Promise<number> {
-  for (let port = startPort; port < startPort + 20; port++) if (await isPortAvailable(port)) return port;
-  throw new Error(`No available port found starting from ${startPort}`);
-}
-
-function parseRiyadhDate(date: string): Date {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Date must be YYYY-MM-DD");
-  const value = new Date(`${date}T13:00:00+03:00`);
-  if (Number.isNaN(value.getTime())) throw new Error("Invalid Riyadh date");
-  return value;
-}
+function isPortAvailable(port: number): Promise<boolean> { return new Promise(resolve => { const server = net.createServer(); server.listen(port, () => server.close(() => resolve(true))); server.on("error", () => resolve(false)); }); }
+async function findAvailablePort(startPort = 3000): Promise<number> { for (let port = startPort; port < startPort + 20; port++) if (await isPortAvailable(port)) return port; throw new Error(`No available port found starting from ${startPort}`); }
+function parseRiyadhDate(date: string): Date { if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Date must be YYYY-MM-DD"); const value = new Date(`${date}T13:00:00+03:00`); if (Number.isNaN(value.getTime())) throw new Error("Invalid Riyadh date"); return value; }
+function templateEnvKey(type: string): string { return `WHATSAPP_TEMPLATE_${type.replace(/([A-Z])/g, "_$1").toUpperCase()}`; }
+function parseTemplateComponents(type: string): unknown[] | undefined { const raw = process.env[`WHATSAPP_TEMPLATE_COMPONENTS_${type.replace(/([A-Z])/g, "_$1").toUpperCase()}`]?.trim(); if (!raw) return undefined; try { const parsed = JSON.parse(raw); return Array.isArray(parsed) ? parsed : undefined; } catch { throw new Error(`Invalid JSON in WHATSAPP_TEMPLATE_COMPONENTS_${type.replace(/([A-Z])/g, "_$1").toUpperCase()}`); } }
 
 async function startServer() {
   const app = express();
@@ -56,31 +46,38 @@ async function startServer() {
   const conversationService = new ConversationService(conversationRepository);
   const contactResolver = new ContactResolver(new DatabaseContactRepository());
   const appointmentService = new AppointmentService(new DatabaseAppointmentRepository(), new MachineService(new DatabaseMachineRepository()));
-  const automationService = new AutomationService(new DatabaseAutomationRepository());
   const treatmentCatalog = new TreatmentCatalog();
+  const messageService = new WhatsAppMessageService(new DatabaseMessageRepository());
 
   const aiAgent = isGeminiConfigured() ? new AiAgent(new GeminiService(), conversationRepository, conversationService, {
-    getVerifiedTreatment: async treatmentCode => {
-      try {
-        const treatment = treatmentCatalog.get(treatmentCode);
-        return { code: treatment.code, name: treatment.name, durationMinutes: treatment.maxMinutes };
-      } catch {
-        return null;
-      }
-    },
-    checkAvailability: async input => {
-      const date = parseRiyadhDate(input.date);
-      return appointmentService.findAvailableSlots(date, input.treatmentCode);
-    },
-    requestHumanHandoff: async reason => {
-      console.warn(`[AI handoff] ${reason}`);
-    },
+    getVerifiedTreatment: async treatmentCode => { try { const treatment = treatmentCatalog.get(treatmentCode); return { code: treatment.code, name: treatment.name, durationMinutes: treatment.maxMinutes }; } catch { return null; } },
+    checkAvailability: async input => appointmentService.findAvailableSlots(parseRiyadhDate(input.date), input.treatmentCode),
+    requestHumanHandoff: async reason => { console.warn(`[AI handoff] ${reason}`); },
   }) : undefined;
 
-  const messageService = new WhatsAppMessageService(new DatabaseMessageRepository());
+  const automationRepository = new DatabaseAutomationRepository();
+  const automationService = new AutomationService(automationRepository, async (job: AutomationJob) => {
+    if (!job.contactId) throw new Error("Automation job is missing contactId");
+    const templateName = process.env[templateEnvKey(job.type)]?.trim();
+    if (!templateName) throw new Error(`Approved WhatsApp template is not configured: ${templateEnvKey(job.type)}`);
+    const db = await getDb();
+    if (!db) throw new Error("DATABASE_URL is not configured");
+    const rows = await db.select({ phoneNumber: whatsappContacts.phoneNumber }).from(whatsappContacts).where(eq(whatsappContacts.id, Number(job.contactId))).limit(1);
+    const contact = rows[0];
+    if (!contact) throw new Error(`WhatsApp contact not found: ${job.contactId}`);
+    const client = createWhatsAppClient();
+    const languageCode = process.env.WHATSAPP_AUTOMATION_LANGUAGE_CODE?.trim() || "en_US";
+    const sent = await client.sendTemplateMessage({ to: contact.phoneNumber, templateName, languageCode, components: parseTemplateComponents(job.type) });
+    const waMessageId = sent.messages?.[0]?.id;
+    if (!waMessageId) throw new Error("WhatsApp API returned no outbound automation message ID");
+    const conversation = await conversationRepository.findOpenByContact(job.contactId);
+    if (conversation) await messageService.persistOutgoing({ waMessageId, to: contact.phoneNumber, conversationId: conversation.id, payload: { messaging_product: "whatsapp", to: contact.phoneNumber, type: "template", template: { name: templateName, language: { code: languageCode }, components: parseTemplateComponents(job.type) } }, status: sent.messages?.[0]?.message_status || "sent" });
+  });
+
   const webhookProcessor = new WebhookProcessor(messageService, contactResolver, conversationService, aiAgent ? async ({ text, from, conversationId, messageId }) => {
     try {
       const config = getWhatsAppConfig();
+      void config;
       const client = createWhatsAppClient();
       await client.markMessageAsRead(messageId);
       const reply = await aiAgent.respond(conversationId, text);
@@ -90,25 +87,13 @@ async function startServer() {
       const sent = await client.sendTextMessage({ to: recipient, text: responseText });
       const waMessageId = sent.messages?.[0]?.id;
       if (!waMessageId) throw new Error("WhatsApp API returned no outbound message ID");
-      await messageService.persistOutgoing({
-        waMessageId,
-        to: recipient,
-        conversationId,
-        payload: { messaging_product: "whatsapp", to: recipient, type: "text", text: { body: responseText } },
-        status: sent.messages?.[0]?.message_status || "sent",
-      });
-      void config;
-    } catch (error) {
-      console.error("[WhatsApp] AI outbound reply failed:", error);
-    }
+      await messageService.persistOutgoing({ waMessageId, to: recipient, conversationId, payload: { messaging_product: "whatsapp", to: recipient, type: "text", text: { body: responseText } }, status: sent.messages?.[0]?.message_status || "sent" });
+    } catch (error) { console.error("[WhatsApp] AI outbound reply failed:", error); }
   } : undefined);
 
   registerOperationsRoutes(app, {
     processWebhook: (payload, eventIds) => webhookProcessor.process(payload, eventIds),
-    conversations: Object.assign(conversationService, {
-      list: (limit?: number) => conversationRepository.list(limit),
-      getConversation: (id: string) => conversationRepository.getConversation(id),
-    }),
+    conversations: Object.assign(conversationService, { list: (limit?: number) => conversationRepository.list(limit), getConversation: (id: string) => conversationRepository.getConversation(id) }),
     appointments: appointmentService,
     aiAgent,
     automations: automationService,
@@ -120,6 +105,15 @@ async function startServer() {
   const port = await findAvailablePort(preferredPort);
   if (port !== preferredPort) console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   server.listen(port, () => console.log(`Server running on http://localhost:${port}/`));
+
+  const runAutomationWorker = async () => {
+    try {
+      const processed = await automationService.processDue(new Date(), 50);
+      if (processed > 0) console.log(`[Automation] processed ${processed} due job(s)`);
+    } catch (error) { console.error("[Automation] worker error:", error); }
+  };
+  void runAutomationWorker();
+  setInterval(() => { void runAutomationWorker(); }, 60_000);
 }
 
 startServer().catch(console.error);
