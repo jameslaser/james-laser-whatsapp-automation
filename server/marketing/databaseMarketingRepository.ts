@@ -1,4 +1,4 @@
-import { and, eq, lte } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { auditLogs, whatsappCampaigns, whatsappContacts, whatsappOptIns, whatsappTemplates } from "../../drizzle/schema";
 import { getDb } from "../db";
 import type { AudienceFilter, CampaignDraft, MarketingRepository } from "./marketingService";
@@ -36,8 +36,8 @@ export class DatabaseMarketingRepository implements MarketingRepository {
 
   async getDueCampaigns(now: Date): Promise<DueCampaign[]> {
     const db = await this.database();
-    const rows = await db.select({ id: whatsappCampaigns.id, name: whatsappCampaigns.name, templateName: whatsappTemplates.name, languageCode: whatsappCampaigns.languageCode, consentRequired: whatsappCampaigns.consentRequired, scheduledAt: whatsappCampaigns.scheduledAt }).from(whatsappCampaigns).innerJoin(whatsappTemplates, eq(whatsappTemplates.id, whatsappCampaigns.templateId)).where(and(eq(whatsappCampaigns.status, "SCHEDULED"), lte(whatsappCampaigns.scheduledAt, now)));
-    return rows.map(row => ({ id: String(row.id), name: row.name, templateName: row.templateName, languageCode: row.languageCode, audience: { consentRequired: Boolean(row.consentRequired) } }));
+    const rows = await db.select({ id: whatsappCampaigns.id, name: whatsappCampaigns.name, templateName: whatsappTemplates.name, languageCode: whatsappCampaigns.languageCode, consentRequired: whatsappCampaigns.consentRequired, scheduledAt: whatsappCampaigns.scheduledAt }).from(whatsappCampaigns).innerJoin(whatsappTemplates, eq(whatsappTemplates.id, whatsappCampaigns.templateId)).where(eq(whatsappCampaigns.status, "SCHEDULED"));
+    return rows.filter(row => row.scheduledAt && new Date(row.scheduledAt).getTime() <= now.getTime()).map(row => ({ id: String(row.id), name: row.name, templateName: row.templateName, languageCode: row.languageCode, audience: { consentRequired: Boolean(row.consentRequired) } }));
   }
 
   async markCampaignStatus(id: string, status: string): Promise<void> {
