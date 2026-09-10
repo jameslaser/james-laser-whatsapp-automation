@@ -120,7 +120,23 @@ async function startServer() {
     checkAvailability: async input => {
       const date = new Date(`${input.date}T12:00:00+03:00`);
       if (Number.isNaN(date.getTime())) throw new Error("date must be YYYY-MM-DD");
-      return appointmentService.findAvailableSlots(date, input.treatmentCode).then(slots => slots.map(slot => ({ startsAt: slot.startsAt.toISOString(), endsAt: slot.endsAt.toISOString(), machineNames: slot.machineNames })));
+      const slots = await appointmentService.findAvailableSlots(date, input.treatmentCode);
+      if (!input.preferredTime) return slots.map(slot => ({ startsAt: slot.startsAt.toISOString(), endsAt: slot.endsAt.toISOString(), machineNames: slot.machineNames }));
+      const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(input.preferredTime.trim());
+      if (!match) throw new Error("preferredTime must be HH:mm");
+      const preferredMinutes = Number(match[1]) * 60 + Number(match[2]);
+      const dayStart = Math.floor(preferredMinutes / 15) * 15;
+      const windowEnd = Math.min(dayStart + 60, 22 * 60);
+      const preferred = slots.filter(slot => {
+        const localMinutes = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Riyadh", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(slot.startsAt).split(":")[0]) * 60 + Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Riyadh", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(slot.startsAt).split(":")[1]);
+        return localMinutes >= dayStart && localMinutes < windowEnd;
+      });
+      const candidates = preferred.length ? preferred : slots.filter(slot => {
+        const local = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Riyadh", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(slot.startsAt);
+        const [h, m] = local.split(":").map(Number);
+        return h * 60 + m > preferredMinutes;
+      }).slice(0, 4);
+      return candidates.map(slot => ({ startsAt: slot.startsAt.toISOString(), endsAt: slot.endsAt.toISOString(), machineNames: slot.machineNames }));
     },
     bookAppointment: async input => {
       if (!input.confirmedByCustomer) return { booked: false, requiresConfirmation: true };
