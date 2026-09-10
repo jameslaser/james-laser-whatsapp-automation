@@ -15,6 +15,13 @@
       "when": 1788998543875,
       "tag": "0001_right_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1788999641499,
+      "tag": "0002_light_gorgon",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,1 @@
+ALTER TABLE `appointments` ADD `provider` varchar(64) DEFAULT 'NR011 JAMES FLORES' NOT NULL;

@@ -59,6 +59,7 @@ export interface IncomingMessageEvent {
 
 export interface AppointmentDraft {
   customerId: string;
+  provider?: string;
   treatmentCode: string;
   startsAt: Date;
   durationMinutes: number;
