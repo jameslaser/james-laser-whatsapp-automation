@@ -3,7 +3,7 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { eq } from "drizzle-orm";
-import { leads, patients, whatsappContacts } from "../../drizzle/schema";
+import { leads, patients, whatsappContacts, whatsappOptIns } from "../../drizzle/schema";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { registerStorageProxy } from "./storageProxy";
@@ -20,10 +20,11 @@ import { ConversationService } from "../integrations/whatsapp/conversations/conv
 import { ContactResolver } from "../integrations/whatsapp/contacts/contactResolver";
 import { AppointmentService } from "../appointments/appointmentService";
 import { MachineService } from "../appointments/machineService";
+import { BlockAwareMachineRepository } from "../appointments/blockAwareMachineRepository";
 import { AutomationService } from "../automation/automationService";
 import { WhatsAppAutomationSender } from "../automation/whatsappAutomationSender";
 import { TreatmentCatalog } from "../appointments/treatments";
-import { DatabaseAppointmentRepository, DatabaseAutomationRepository, DatabaseContactRepository, DatabaseConversationRepository, DatabaseMachineRepository, DatabaseMessageRepository, normalizeMachine } from "../db/operationsRepository";
+import { DatabaseAppointmentRepository, DatabaseAutomationRepository, DatabaseContactRepository, DatabaseConversationRepository, DatabaseMessageRepository, normalizeMachine } from "../db/operationsRepository";
 import { createWhatsAppClient } from "../integrations/whatsapp/client/whatsappClient";
 import { getOptionalWhatsAppConfig } from "../integrations/whatsapp/config/env";
 import { getDb } from "../db";
@@ -52,6 +53,21 @@ function componentsFor(type: string): unknown[] | undefined {
   if (!raw) return undefined;
   try { const parsed = JSON.parse(raw); return Array.isArray(parsed) ? parsed : undefined; }
   catch { console.warn(`[WhatsApp] Ignoring invalid JSON in ${key}`); return undefined; }
+}
+
+function normalizeConsentCommand(text: string): "STOP" | "START" | null {
+  const normalized = text.trim().toLowerCase().replace(/[.!؟?]+$/g, "");
+  if (["stop", "unsubscribe", "opt out", "optout", "إيقاف", "الغاء", "إلغاء"].includes(normalized)) return "STOP";
+  if (["start", "subscribe", "opt in", "optin", "بدء", "ابدأ"].includes(normalized)) return "START";
+  return null;
+}
+
+async function setWhatsAppConsent(contactId: string, optedIn: boolean, source: string): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_URL is not configured");
+  const id = Number(contactId);
+  await db.update(whatsappContacts).set({ optedOut: !optedIn }).where(eq(whatsappContacts.id, id));
+  await db.insert(whatsappOptIns).values({ contactId: id, optedIn, source });
 }
 
 async function resolvePatientForWhatsAppContact(contactId: string, customerName: string): Promise<{ patientId: string; phoneNumber: string }> {
@@ -91,7 +107,7 @@ async function startServer() {
   const conversationRepository = new DatabaseConversationRepository();
   const conversationService = new ConversationService(conversationRepository);
   const contactResolver = new ContactResolver(new DatabaseContactRepository());
-  const appointmentService = new AppointmentService(new DatabaseAppointmentRepository(), new MachineService(new DatabaseMachineRepository()));
+  const appointmentService = new AppointmentService(new DatabaseAppointmentRepository(), new MachineService(new BlockAwareMachineRepository()));
   const automationService = new AutomationService(new DatabaseAutomationRepository(), new WhatsAppAutomationSender());
   const messageService = new WhatsAppMessageService(new DatabaseMessageRepository());
   const treatmentCatalog = new TreatmentCatalog();
@@ -134,6 +150,23 @@ async function startServer() {
   }) : undefined;
 
   const webhookProcessor = new WebhookProcessor(messageService, contactResolver, conversationService, aiAgent && getOptionalWhatsAppConfig() ? async (event, conversation) => {
+    const command = event.text ? normalizeConsentCommand(event.text) : null;
+    if (command) {
+      await setWhatsAppConsent(conversation.contactId, command === "START", "whatsapp_keyword");
+      if (command === "STOP") await conversationService.pauseAi(conversation.id);
+      else await conversationService.resumeAi(conversation.id);
+      const text = command === "STOP"
+        ? "You’re unsubscribed from marketing messages. Reply START anytime to opt in again."
+        : "You’re subscribed again. We’ll keep WhatsApp messages relevant and respectful.";
+      const response = await createWhatsAppClient().sendTextMessage({ to: event.from, text });
+      const waMessageId = response.messages?.[0]?.id;
+      if (!waMessageId) throw new Error("Meta accepted no consent confirmation message id");
+      await messageService.persistOutgoing({ waMessageId, to: event.from, conversationId: conversation.id, payload: response as unknown as Record<string, unknown>, status: response.messages?.[0]?.message_status || "accepted" });
+      return;
+    }
+
+    try { await createWhatsAppClient().markMessageAsRead(event.waMessageId); }
+    catch (error) { console.warn("[WhatsApp] Failed to mark inbound message as read:", error); }
     const reply = await aiAgent.respond(conversation.id, event.text || "");
     if (!reply.text) return;
     const response = await createWhatsAppClient().sendTextMessage({ to: event.from, text: reply.text });
