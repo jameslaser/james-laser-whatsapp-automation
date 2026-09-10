@@ -1,6 +1,6 @@
 import type { Express, Request } from "express";
 import { createWhatsAppClient } from "../integrations/whatsapp/client/whatsappClient";
-import { getWhatsAppConfig } from "../integrations/whatsapp/config/env";
+import { getWhatsAppConfig, canonicalWhatsAppIdentity } from "../integrations/whatsapp/config/env";
 import { parseWhatsAppEvents, extractStatusEvents } from "../integrations/whatsapp/webhook/handler";
 import { verifyWebhookChallenge, verifyWebhookSignature } from "../integrations/whatsapp/webhook/signature";
 import { runHealthChecks } from "../health/healthService";
@@ -37,6 +37,26 @@ async function requireCron(req: Request, res: { status(code: number): { json(bod
   try { const user = await sdk.authenticateRequest(req); if (!user.isCron || !user.taskUid) { res.status(403).json({ error: "Cron authorization required" }); return null; } return user; }
   catch { res.status(401).json({ error: "Scheduled task authentication required" }); return null; }
 }
+function validateCanonicalWebhook(payload: Record<string, unknown>): void {
+  const identity = canonicalWhatsAppIdentity();
+  const entries = Array.isArray(payload.entry) ? payload.entry : [];
+  if (!entries.length) throw new Error("WhatsApp webhook payload contains no entries");
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const entryRecord = entry as Record<string, unknown>;
+    if (typeof entryRecord.id === "string" && entryRecord.id !== identity.wabaId) throw new Error("Webhook WABA does not match the canonical James Laser WABA");
+    const changes = Array.isArray(entryRecord.changes) ? entryRecord.changes : [];
+    for (const change of changes) {
+      if (!change || typeof change !== "object") continue;
+      const value = (change as Record<string, unknown>).value;
+      if (!value || typeof value !== "object") continue;
+      const metadata = (value as Record<string, unknown>).metadata;
+      if (!metadata || typeof metadata !== "object") continue;
+      const phoneNumberId = (metadata as Record<string, unknown>).phone_number_id;
+      if (typeof phoneNumberId === "string" && phoneNumberId !== getWhatsAppConfig().phoneNumberId) throw new Error("Webhook phone number does not match the configured WhatsApp phone number");
+    }
+  }
+}
 
 export function registerOperationsRoutes(app: Express, dependencies: OperationsRouteDependencies) {
   app.get("/webhooks/whatsapp", (req, res) => {
@@ -48,6 +68,7 @@ export function registerOperationsRoutes(app: Express, dependencies: OperationsR
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody || JSON.stringify(req.body);
       if (!verifyWebhookSignature(rawBody, req.header("x-hub-signature-256"))) return res.status(401).json({ error: "Invalid webhook signature" });
       const payload = jsonBody(req);
+      validateCanonicalWebhook(payload);
       const events = parseWhatsAppEvents(payload); const statuses = extractStatusEvents(payload);
       const result = await dependencies.processWebhook(payload, [...events.map(event => event.eventId), ...statuses.map(status => status.id)]);
       return res.status(200).json({ received: true, ...result });
