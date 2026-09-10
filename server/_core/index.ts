@@ -26,7 +26,7 @@ import { BookingService } from "../appointments/bookingService";
 import { AutomationService } from "../automation/automationService";
 import { TreatmentCatalog } from "../appointments/treatments";
 import { getDb } from "../db";
-import { appointments, patients, whatsappContacts } from "../../drizzle/schema";
+import { appointments, patients, whatsappContacts, whatsappOptIns } from "../../drizzle/schema";
 import { DatabaseAppointmentRepository, DatabaseAutomationRepository, DatabaseContactRepository, DatabaseConversationRepository, DatabaseMessageRepository } from "../db/operationsRepository";
 import type { AutomationJob } from "../types/operations";
 
@@ -43,9 +43,7 @@ async function findAvailablePort(startPort = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
-function templateEnvKey(type: string): string {
-  return `WHATSAPP_TEMPLATE_${type.replace(/([A-Z])/g, "_$1").toUpperCase()}`;
-}
+function templateEnvKey(type: string): string { return `WHATSAPP_TEMPLATE_${type.replace(/([A-Z])/g, "_$1").toUpperCase()}`; }
 
 function parseTemplateComponents(type: string, variables: Record<string, string> = {}): unknown[] | undefined {
   const raw = process.env[`WHATSAPP_TEMPLATE_COMPONENTS_${type.replace(/([A-Z])/g, "_$1").toUpperCase()}`]?.trim();
@@ -60,21 +58,11 @@ function parseTemplateComponents(type: string, variables: Record<string, string>
     };
     const replaced = replaceTokens(parsed);
     return Array.isArray(replaced) ? replaced : undefined;
-  } catch {
-    throw new Error(`Invalid JSON in WHATSAPP_TEMPLATE_COMPONENTS_${type.replace(/([A-Z])/g, "_$1").toUpperCase()}`);
-  }
+  } catch { throw new Error(`Invalid JSON in WHATSAPP_TEMPLATE_COMPONENTS_${type.replace(/([A-Z])/g, "_$1").toUpperCase()}`); }
 }
 
 function formatRiyadhDateTime(value: Date): { date: string; time: string } {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Riyadh",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(value);
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Riyadh", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(value);
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
   return { date: `${values.year}-${values.month}-${values.day}`, time: `${values.hour}:${values.minute}` };
 }
@@ -89,12 +77,19 @@ function selectAvailabilityWindow(slots: any[], preferredTime?: string, windowMi
   if (!preferredTime) return slots;
   const start = timeToMinutes(preferredTime);
   const end = start + Math.max(15, Math.min(windowMinutes, 240));
-  const inWindow = slots.filter(slot => {
-    const minutes = timeToMinutes(formatRiyadhDateTime(new Date(slot.startsAt)).time);
-    return minutes >= start && minutes <= end;
-  });
+  const inWindow = slots.filter(slot => { const minutes = timeToMinutes(formatRiyadhDateTime(new Date(slot.startsAt)).time); return minutes >= start && minutes <= end; });
   const later = slots.filter(slot => timeToMinutes(formatRiyadhDateTime(new Date(slot.startsAt)).time) > end).slice(0, 3);
   return { requestedWindow: { from: preferredTime, to: `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}` }, availableSlots: inWindow.slice(0, 8), nearestLaterSlots: later };
+}
+
+function isStopKeyword(text: string): boolean { return /^(stop|unsubscribe|cancel|quit|remove|إلغاء|الغاء|وقف|إيقاف)$/i.test(text.trim()); }
+function isStartKeyword(text: string): boolean { return /^(start|unstop|subscribe|resume|ابدأ|ابدا|اشتراك)$/i.test(text.trim()); }
+
+async function updateMarketingConsent(contactId: string, optedIn: boolean): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("DATABASE_URL is not configured");
+  await db.update(whatsappContacts).set({ optedOut: !optedIn }).where(eq(whatsappContacts.id, Number(contactId)));
+  await db.insert(whatsappOptIns).values({ contactId: Number(contactId), optedIn, source: "whatsapp_keyword" });
 }
 
 async function startServer() {
@@ -121,11 +116,9 @@ async function startServer() {
     if (!templateName) throw new Error(`Approved WhatsApp template is not configured: ${templateEnvKey(job.type)}`);
     const db = await getDb();
     if (!db) throw new Error("DATABASE_URL is not configured");
-
     const contactRows = await db.select({ phoneNumber: whatsappContacts.phoneNumber, displayName: whatsappContacts.displayName, patientId: whatsappContacts.patientId }).from(whatsappContacts).where(eq(whatsappContacts.id, Number(job.contactId))).limit(1);
     const contact = contactRows[0];
     if (!contact) throw new Error(`WhatsApp contact not found: ${job.contactId}`);
-
     let variables: Record<string, string> = { name: contact.displayName || "" };
     if (job.appointmentId) {
       const appointmentRows = await db.select().from(appointments).where(eq(appointments.id, Number(job.appointmentId))).limit(1);
@@ -139,7 +132,6 @@ async function startServer() {
         }
       }
     }
-
     const languageCode = process.env.WHATSAPP_AUTOMATION_LANGUAGE_CODE?.trim() || "en_US";
     const components = parseTemplateComponents(job.type, variables);
     const client = createWhatsAppClient();
@@ -153,40 +145,15 @@ async function startServer() {
   const bookingService = new BookingService(appointmentService, automationService);
 
   const aiAgent = isGeminiConfigured() ? new AiAgent(new GeminiService(), conversationRepository, conversationService, {
-    getVerifiedTreatment: async treatmentCode => {
-      try {
-        const treatment = treatmentCatalog.get(treatmentCode);
-        return { code: treatment.code, name: treatment.name, durationMinutes: treatment.maxMinutes };
-      } catch {
-        return null;
-      }
-    },
-    checkAvailability: async input => {
-      const slots = await appointmentService.findAvailableSlots(parseRiyadhDate(input.date), input.treatmentCode);
-      return selectAvailabilityWindow(slots, input.preferredTime, input.windowMinutes || 60);
-    },
+    getVerifiedTreatment: async treatmentCode => { try { const treatment = treatmentCatalog.get(treatmentCode); return { code: treatment.code, name: treatment.name, durationMinutes: treatment.maxMinutes }; } catch { return null; } },
+    checkAvailability: async input => { const slots = await appointmentService.findAvailableSlots(parseRiyadhDate(input.date), input.treatmentCode); return selectAvailabilityWindow(slots, input.preferredTime, input.windowMinutes || 60); },
     createAppointment: async input => {
       if (!input.confirmedByCustomer) throw new Error("The customer must explicitly confirm the exact slot before booking");
       const conversation = await conversationRepository.getConversation(input.conversationId);
       if (!conversation) throw new Error("WhatsApp conversation not found");
       const result = await bookingService.createConfirmedWhatsAppBooking({ ...input, contactId: conversation.contactId });
       const formatted = formatRiyadhDateTime(result.appointment.startsAt);
-      return {
-        success: true,
-        appointmentId: result.appointment.id,
-        status: result.appointment.status,
-        customerName: result.customerName,
-        phoneNumber: result.phoneNumber,
-        treatmentCode: result.appointment.treatmentCode,
-        date: formatted.date,
-        time: formatted.time,
-        durationMinutes: result.appointment.durationMinutes,
-        machineName: result.appointment.machineName,
-        provider: result.appointment.provider,
-        confirmationScheduled: result.confirmationScheduled,
-        reminder24hScheduled: result.reminder24hScheduled,
-        sameDayReminderScheduled: result.sameDayReminderScheduled,
-      };
+      return { success: true, appointmentId: result.appointment.id, status: result.appointment.status, customerName: result.customerName, phoneNumber: result.phoneNumber, treatmentCode: result.appointment.treatmentCode, date: formatted.date, time: formatted.time, durationMinutes: result.appointment.durationMinutes, machineName: result.appointment.machineName, provider: result.appointment.provider, confirmationScheduled: result.confirmationScheduled, reminder24hScheduled: result.reminder24hScheduled, sameDayReminderScheduled: result.sameDayReminderScheduled };
     },
     requestHumanHandoff: async reason => { console.warn(`[AI handoff] ${reason}`); },
   }) : undefined;
@@ -196,6 +163,22 @@ async function startServer() {
       getWhatsAppConfig();
       const client = createWhatsAppClient();
       await client.markMessageAsRead(messageId);
+      if (isStopKeyword(text)) {
+        await updateMarketingConsent((await conversationRepository.getConversation(conversationId))!.contactId, false);
+        const recipient = from.startsWith("+") ? from : `+${from}`;
+        const sent = await client.sendTextMessage({ to: recipient, text: "You have been unsubscribed from marketing messages. Transactional appointment messages may still be sent.\nتم إلغاء الاشتراك من الرسائل التسويقية. قد تستمر رسائل المواعيد الضرورية." });
+        const waMessageId = sent.messages?.[0]?.id;
+        if (waMessageId) await messageService.persistOutgoing({ waMessageId, to: recipient, conversationId, payload: { messaging_product: "whatsapp", to: recipient, type: "text", text: { body: "You have been unsubscribed from marketing messages." } }, status: sent.messages?.[0]?.message_status || "sent" });
+        return;
+      }
+      if (isStartKeyword(text)) {
+        await updateMarketingConsent((await conversationRepository.getConversation(conversationId))!.contactId, true);
+        const recipient = from.startsWith("+") ? from : `+${from}`;
+        const sent = await client.sendTextMessage({ to: recipient, text: "Marketing messages are enabled again.\nتم تفعيل الرسائل التسويقية مرة أخرى." });
+        const waMessageId = sent.messages?.[0]?.id;
+        if (waMessageId) await messageService.persistOutgoing({ waMessageId, to: recipient, conversationId, payload: { messaging_product: "whatsapp", to: recipient, type: "text", text: { body: "Marketing messages are enabled again." } }, status: sent.messages?.[0]?.message_status || "sent" });
+        return;
+      }
       const reply = await aiAgent.respond(conversationId, text);
       const recipient = from.startsWith("+") ? from : `+${from}`;
       const responseText = reply.text || (reply.escalated ? "Thank you. A member of our team will assist you shortly.\nشكرًا لك. سيتواصل معك أحد أعضاء فريقنا قريبًا." : "");
@@ -204,9 +187,7 @@ async function startServer() {
       const waMessageId = sent.messages?.[0]?.id;
       if (!waMessageId) throw new Error("WhatsApp API returned no outbound message ID");
       await messageService.persistOutgoing({ waMessageId, to: recipient, conversationId, payload: { messaging_product: "whatsapp", to: recipient, type: "text", text: { body: responseText } }, status: sent.messages?.[0]?.message_status || "sent" });
-    } catch (error) {
-      console.error("[WhatsApp] AI outbound reply failed:", error);
-    }
+    } catch (error) { console.error("[WhatsApp] AI outbound reply failed:", error); }
   } : undefined);
 
   registerOperationsRoutes(app, {
@@ -223,15 +204,7 @@ async function startServer() {
   const port = await findAvailablePort(preferredPort);
   if (port !== preferredPort) console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   server.listen(port, () => console.log(`Server running on http://localhost:${port}/`));
-
-  const runAutomationWorker = async () => {
-    try {
-      const processed = await automationService.processDue(new Date(), 50);
-      if (processed > 0) console.log(`[Automation] processed ${processed} due job(s)`);
-    } catch (error) {
-      console.error("[Automation] worker error:", error);
-    }
-  };
+  const runAutomationWorker = async () => { try { const processed = await automationService.processDue(new Date(), 50); if (processed > 0) console.log(`[Automation] processed ${processed} due job(s)`); } catch (error) { console.error("[Automation] worker error:", error); } };
   void runAutomationWorker();
   setInterval(() => { void runAutomationWorker(); }, 60_000);
 }
