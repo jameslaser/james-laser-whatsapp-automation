@@ -4,12 +4,7 @@ import type { ContactResolver } from "../contacts/contactResolver";
 import type { ConversationService } from "../conversations/conversationService";
 
 export interface IncomingMessageHandler {
-  (input: {
-    text: string;
-    from: string;
-    conversationId: string;
-    messageId: string;
-  }): Promise<void>;
+  (input: { text: string; from: string; conversationId: string; messageId: string }): Promise<void>;
 }
 
 export class WebhookProcessor {
@@ -20,19 +15,13 @@ export class WebhookProcessor {
     private readonly onIncomingText?: IncomingMessageHandler,
   ) {}
 
-  async process(
-    payload: Record<string, unknown>,
-    _eventIds: string[] = [],
-  ): Promise<{ accepted: number; duplicate: number }> {
+  async process(payload: Record<string, unknown>, _eventIds: string[] = []): Promise<{ accepted: number; duplicate: number }> {
     let accepted = 0;
     let duplicate = 0;
 
     for (const event of parseWhatsAppEvents(payload)) {
       const fresh = await this.messages.acceptWebhookEvent(`message:${event.waMessageId}`, payload);
-      if (!fresh) {
-        duplicate++;
-        continue;
-      }
+      if (!fresh) { duplicate++; continue; }
 
       const contact = await this.contacts.resolve(event.from);
       const conversation = await this.conversations.findOrCreate(contact.id);
@@ -40,14 +29,9 @@ export class WebhookProcessor {
       await this.conversations.addMessage(conversation.id, event.waMessageId);
       accepted++;
 
-      if (event.kind === "text" && event.text?.trim() && this.onIncomingText) {
+      if (event.text?.trim() && this.onIncomingText) {
         try {
-          await this.onIncomingText({
-            text: event.text.trim(),
-            from: event.from,
-            conversationId: conversation.id,
-            messageId: event.waMessageId,
-          });
+          await this.onIncomingText({ text: event.text.trim(), from: event.from, conversationId: conversation.id, messageId: event.waMessageId });
         } catch (error) {
           console.error("[WhatsApp] Incoming AI handler failed:", error);
         }
@@ -56,15 +40,8 @@ export class WebhookProcessor {
 
     for (const status of extractStatusEvents(payload)) {
       const timestamp = status.timestamp.getTime();
-      const fresh = await this.messages.acceptWebhookEvent(
-        `status:${status.id}:${status.status}:${timestamp}`,
-        payload,
-      );
-      if (!fresh) {
-        duplicate++;
-        continue;
-      }
-
+      const fresh = await this.messages.acceptWebhookEvent(`status:${status.id}:${status.status}:${timestamp}`, payload);
+      if (!fresh) { duplicate++; continue; }
       await this.messages.updateStatus(status.id, status.status, status.raw);
       accepted++;
     }
