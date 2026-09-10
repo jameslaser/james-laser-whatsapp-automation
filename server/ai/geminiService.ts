@@ -57,6 +57,7 @@ Only state treatment, duration, machine, appointment, and availability facts ret
 Never invent prices, promotions, availability, package inclusions, or clinic policies.
 Use getVerifiedTreatment before stating treatment duration.
 Use checkAvailability before offering appointment times.
+If the customer gives an approximate time such as "around 3 PM", pass preferredTime as 15:00 and use the returned one-hour window; if unavailable, offer only the nearest later slots returned by the tool.
 When a customer wants to book, collect treatment, exact Riyadh date, exact time, and full name.
 Offer only slots returned by the availability tool.
 Never call bookAppointment until the customer has explicitly confirmed the exact offered treatment and exact time.
@@ -67,7 +68,7 @@ Escalate complaints, refunds, medical concerns, sensitive issues, or explicit re
 
 function toolParameters(name: string): Record<string, unknown> {
   if (name === "getVerifiedTreatment") return { type: "object", properties: { treatmentCode: { type: "string" } }, required: ["treatmentCode"] };
-  if (name === "checkAvailability") return { type: "object", properties: { treatmentCode: { type: "string" }, date: { type: "string", description: "Riyadh clinic date in YYYY-MM-DD format" } }, required: ["treatmentCode", "date"] };
+  if (name === "checkAvailability") return { type: "object", properties: { treatmentCode: { type: "string" }, date: { type: "string", description: "Riyadh clinic date in YYYY-MM-DD format" }, preferredTime: { type: "string", description: "Optional preferred Riyadh time in HH:mm. Treat it as a one-hour preferred window." } }, required: ["treatmentCode", "date"] };
   if (name === "bookAppointment") return { type: "object", properties: { treatmentCode: { type: "string" }, date: { type: "string", description: "Confirmed Riyadh clinic date in YYYY-MM-DD format" }, time: { type: "string", description: "Confirmed Riyadh clinic time in HH:mm 24-hour format" }, customerName: { type: "string", description: "Customer's full name exactly as provided by the customer" }, machineName: { type: "string", description: "Optional machine selected from the availability result" } }, required: ["treatmentCode", "date", "time", "customerName"] };
   return { type: "object", properties: { reason: { type: "string" } }, required: ["reason"] };
 }
