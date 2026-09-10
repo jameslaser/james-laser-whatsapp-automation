@@ -79,6 +79,24 @@ function formatRiyadhDateTime(value: Date): { date: string; time: string } {
   return { date: `${values.year}-${values.month}-${values.day}`, time: `${values.hour}:${values.minute}` };
 }
 
+function timeToMinutes(value: string): number {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error("Preferred time must be HH:mm");
+  const [hour, minute] = value.split(":").map(Number);
+  return hour * 60 + minute;
+}
+
+function selectAvailabilityWindow(slots: any[], preferredTime?: string, windowMinutes = 60): unknown {
+  if (!preferredTime) return slots;
+  const start = timeToMinutes(preferredTime);
+  const end = start + Math.max(15, Math.min(windowMinutes, 240));
+  const inWindow = slots.filter(slot => {
+    const minutes = timeToMinutes(formatRiyadhDateTime(new Date(slot.startsAt)).time);
+    return minutes >= start && minutes <= end;
+  });
+  const later = slots.filter(slot => timeToMinutes(formatRiyadhDateTime(new Date(slot.startsAt)).time) > end).slice(0, 3);
+  return { requestedWindow: { from: preferredTime, to: `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}` }, availableSlots: inWindow.slice(0, 8), nearestLaterSlots: later };
+}
+
 async function startServer() {
   const app = express();
   const server = createServer(app);
@@ -129,15 +147,7 @@ async function startServer() {
     const waMessageId = sent.messages?.[0]?.id;
     if (!waMessageId) throw new Error("WhatsApp API returned no outbound automation message ID");
     const conversation = await conversationRepository.findOpenByContact(job.contactId);
-    if (conversation) {
-      await messageService.persistOutgoing({
-        waMessageId,
-        to: contact.phoneNumber,
-        conversationId: conversation.id,
-        payload: { messaging_product: "whatsapp", to: contact.phoneNumber, type: "template", template: { name: templateName, language: { code: languageCode }, components } },
-        status: sent.messages?.[0]?.message_status || "sent",
-      });
-    }
+    if (conversation) await messageService.persistOutgoing({ waMessageId, to: contact.phoneNumber, conversationId: conversation.id, payload: { messaging_product: "whatsapp", to: contact.phoneNumber, type: "template", template: { name: templateName, language: { code: languageCode }, components } }, status: sent.messages?.[0]?.message_status || "sent" });
   });
 
   const bookingService = new BookingService(appointmentService, automationService);
@@ -151,15 +161,15 @@ async function startServer() {
         return null;
       }
     },
-    checkAvailability: async input => appointmentService.findAvailableSlots(parseRiyadhDate(input.date), input.treatmentCode),
+    checkAvailability: async input => {
+      const slots = await appointmentService.findAvailableSlots(parseRiyadhDate(input.date), input.treatmentCode);
+      return selectAvailabilityWindow(slots, input.preferredTime, input.windowMinutes || 60);
+    },
     createAppointment: async input => {
       if (!input.confirmedByCustomer) throw new Error("The customer must explicitly confirm the exact slot before booking");
       const conversation = await conversationRepository.getConversation(input.conversationId);
       if (!conversation) throw new Error("WhatsApp conversation not found");
-      const result = await bookingService.createConfirmedWhatsAppBooking({
-        ...input,
-        contactId: conversation.contactId,
-      });
+      const result = await bookingService.createConfirmedWhatsAppBooking({ ...input, contactId: conversation.contactId });
       const formatted = formatRiyadhDateTime(result.appointment.startsAt);
       return {
         success: true,
