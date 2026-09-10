@@ -1,4 +1,5 @@
 import axios from "axios";
+import { sql } from "drizzle-orm";
 import { getOptionalWhatsAppConfig } from "../integrations/whatsapp/config/env";
 import { isGeminiConfigured } from "../ai/geminiConfig";
 import { getDb } from "../db";
@@ -9,13 +10,12 @@ export async function runHealthChecks(): Promise<HealthCheck[]> {
   const results: HealthCheck[] = [];
   if (!process.env.DATABASE_URL) results.push({ name: "database", status: "not_configured", detail: "DATABASE_URL is not configured.", checkedAt });
   else {
-    try { const db = await getDb(); if (!db) throw new Error("Database client is unavailable"); await db.execute("SELECT 1"); results.push({ name: "database", status: "ok", detail: "Database connection is healthy.", checkedAt }); }
+    try { const db = await getDb(); if (!db) throw new Error("Database client is unavailable"); await db.execute(sql`SELECT 1`); results.push({ name: "database", status: "ok", detail: "Database connection is healthy.", checkedAt }); }
     catch (error) { results.push({ name: "database", status: "error", detail: error instanceof Error ? error.message : "Database health check failed", checkedAt }); }
   }
   results.push({ name: "gemini", status: isGeminiConfigured() ? "ok" : "not_configured", detail: isGeminiConfigured() ? "Server-side Gemini API key is configured." : "GEMINI_API_KEY is not configured.", checkedAt });
   let whatsapp: ReturnType<typeof getOptionalWhatsAppConfig> = null;
-  try { whatsapp = getOptionalWhatsAppConfig(); }
-  catch (error) { results.push({ name: "whatsapp", status: "error", detail: error instanceof Error ? error.message : "WhatsApp configuration is invalid", checkedAt }); }
+  try { whatsapp = getOptionalWhatsAppConfig(); } catch (error) { results.push({ name: "whatsapp", status: "error", detail: error instanceof Error ? error.message : "WhatsApp configuration is invalid", checkedAt }); }
   if (!whatsapp && !results.some(result => result.name === "whatsapp")) results.push({ name: "whatsapp", status: "not_configured", detail: "WhatsApp server variables are incomplete.", checkedAt });
   if (whatsapp) {
     try { await axios.get(`https://graph.facebook.com/${whatsapp.graphApiVersion}/${whatsapp.phoneNumberId}`, { headers: { Authorization: `Bearer ${whatsapp.accessToken}` }, timeout: 10_000 }); results.push({ name: "whatsapp", status: "ok", detail: "Cloud API responded for the configured phone number ID.", checkedAt }); }
