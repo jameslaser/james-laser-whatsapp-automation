@@ -17,15 +17,17 @@ export class MarketingCampaignWorker {
         await this.repository.markCampaignStatus(campaign.id, "SENDING");
         const audience = await this.audiences.filter(campaign.audience);
         const client = createWhatsAppClient();
+        let failures = 0;
         for (const contact of audience) {
           try {
             const sent = await client.sendTemplateMessage({ to: contact.phoneNumber, templateName: campaign.templateName, languageCode: campaign.languageCode });
             await this.repository.recordDelivery(campaign.id, contact.contactId, sent.messages?.[0]?.message_status || "sent");
           } catch (error) {
+            failures++;
             await this.repository.recordDelivery(campaign.id, contact.contactId, `failed:${error instanceof Error ? error.message : "unknown"}`);
           }
         }
-        await this.repository.markCampaignStatus(campaign.id, "SENT");
+        await this.repository.markCampaignStatus(campaign.id, failures ? "PARTIAL" : "SENT");
         processed++;
       } catch (error) {
         await this.repository.markCampaignStatus(campaign.id, "FAILED");
