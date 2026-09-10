@@ -77,6 +77,11 @@ export interface AvailabilitySlot {
 export interface AutomationJob {
   id?: string;
   type: string;
+  recipient?: string;
+  conversationId?: string;
+  templateName?: string;
+  languageCode?: "ar" | "en";
+  components?: unknown[];
   scheduledAt: Date;
   status: AutomationStatus;
   attempts: number;

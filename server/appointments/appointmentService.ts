@@ -15,15 +15,21 @@ export interface AppointmentRepository {
 export interface AppointmentPolicy { timezone: string; openingHour: number; closingHour: number; slotIntervalMinutes: number; }
 export const DEFAULT_APPOINTMENT_POLICY: AppointmentPolicy = { timezone: "Asia/Riyadh", openingHour: 13, closingHour: 22, slotIntervalMinutes: 15 };
 
+function zonedParts(date: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(date);
+  const values = Object.fromEntries(parts.filter(part => part.type !== "literal").map(part => [part.type, part.value]));
+  return { dateKey: `${values.year}-${values.month}-${values.day}`, minutes: Number(values.hour) * 60 + Number(values.minute) };
+}
+
 export class AppointmentService {
   constructor(private readonly repository: AppointmentRepository, private readonly machines: MachineService, private readonly treatments = new TreatmentCatalog(), private readonly policy = DEFAULT_APPOINTMENT_POLICY) {}
 
   calculateDuration(treatmentCode: string) { return this.treatments.calculateDuration(treatmentCode); }
 
   checkBusinessHours(startsAt: Date, endsAt: Date): boolean {
-    const startMinutes = startsAt.getHours() * 60 + startsAt.getMinutes();
-    const endMinutes = endsAt.getHours() * 60 + endsAt.getMinutes();
-    return startMinutes >= this.policy.openingHour * 60 && endMinutes <= this.policy.closingHour * 60 && startsAt.toDateString() === endsAt.toDateString();
+    const start = zonedParts(startsAt, this.policy.timezone);
+    const end = zonedParts(endsAt, this.policy.timezone);
+    return start.minutes >= this.policy.openingHour * 60 && end.minutes <= this.policy.closingHour * 60 && start.dateKey === end.dateKey;
   }
 
   async checkAvailability(startsAt: Date, durationMinutes: number, excludeId?: string): Promise<{ available: boolean; reasons: string[]; machineNames: string[] }> {
@@ -45,8 +51,10 @@ export class AppointmentService {
   async findAvailableSlots(date: Date, treatmentCode: string): Promise<AvailabilitySlot[]> {
     const duration = this.calculateDuration(treatmentCode);
     const slots: AvailabilitySlot[] = [];
-    const start = new Date(date); start.setHours(this.policy.openingHour, 0, 0, 0);
-    const close = new Date(date); close.setHours(this.policy.closingHour, 0, 0, 0);
+    const dateKey = zonedParts(date, this.policy.timezone).dateKey;
+    const offset = this.policy.timezone === "Asia/Riyadh" ? "+03:00" : "Z";
+    const start = new Date(`${dateKey}T${String(this.policy.openingHour).padStart(2, "0")}:00:00${offset}`);
+    const close = new Date(`${dateKey}T${String(this.policy.closingHour).padStart(2, "0")}:00:00${offset}`);
     for (let cursor = start; cursor.getTime() + duration * 60_000 <= close.getTime(); cursor = new Date(cursor.getTime() + this.policy.slotIntervalMinutes * 60_000)) {
       const result = await this.checkAvailability(cursor, duration);
       slots.push({ startsAt: new Date(cursor), endsAt: new Date(cursor.getTime() + duration * 60_000), available: result.available, machineNames: result.machineNames as AvailabilitySlot["machineNames"] });

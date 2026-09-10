@@ -36,4 +36,10 @@ describe("AppointmentService", () => {
     expect(result.available).toBe(false);
     expect(result.reasons).toContain("Appointment conflict detected");
   });
+
+  it("books an available appointment and selects an approved machine", async () => {
+    const result = await buildService().createAppointment({ customerId: "contact-1", provider: "NR011 JAMES FLORES", treatmentCode: "full-face", startsAt: new Date("2026-09-10T18:00:00+03:00"), durationMinutes: 15 });
+    expect(result.status).toBe("Confirmed");
+    expect(["Deka Again 1", "Clarity 2", "Gentle Pro Max", "Dueto"]).toContain(result.machineName);
+  });
 });
