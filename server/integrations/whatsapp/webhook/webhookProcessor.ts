@@ -3,11 +3,21 @@ import type { WhatsAppMessageService } from "../messages/messageService";
 import type { ContactResolver } from "../contacts/contactResolver";
 import type { ConversationService } from "../conversations/conversationService";
 
+export interface IncomingMessageHandler {
+  (input: {
+    text: string;
+    from: string;
+    conversationId: string;
+    messageId: string;
+  }): Promise<void>;
+}
+
 export class WebhookProcessor {
   constructor(
     private readonly messages: WhatsAppMessageService,
     private readonly contacts: ContactResolver,
     private readonly conversations: ConversationService,
+    private readonly onIncomingText?: IncomingMessageHandler,
   ) {}
 
   async process(
@@ -17,9 +27,6 @@ export class WebhookProcessor {
     let accepted = 0;
     let duplicate = 0;
 
-    // Message and status events use different idempotency keys. A status update
-    // for an outbound message must never collide with the original inbound/outbound
-    // message event stored in whatsappWebhookEvents.
     for (const event of parseWhatsAppEvents(payload)) {
       const fresh = await this.messages.acceptWebhookEvent(`message:${event.waMessageId}`, payload);
       if (!fresh) {
@@ -32,6 +39,19 @@ export class WebhookProcessor {
       await this.messages.persistIncoming(event, contact.id, conversation.id);
       await this.conversations.addMessage(conversation.id, event.waMessageId);
       accepted++;
+
+      if (event.kind === "text" && event.text?.trim() && this.onIncomingText) {
+        try {
+          await this.onIncomingText({
+            text: event.text.trim(),
+            from: event.from,
+            conversationId: conversation.id,
+            messageId: event.waMessageId,
+          });
+        } catch (error) {
+          console.error("[WhatsApp] Incoming AI handler failed:", error);
+        }
+      }
     }
 
     for (const status of extractStatusEvents(payload)) {
