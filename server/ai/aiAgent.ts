@@ -38,6 +38,7 @@ export class AiAgent {
         return this.tools.checkAvailability({
           treatmentCode: String(args.treatmentCode || ""),
           date: String(args.date || ""),
+          preferredTime: typeof args.preferredTime === "string" ? args.preferredTime : undefined,
         });
       }
 
