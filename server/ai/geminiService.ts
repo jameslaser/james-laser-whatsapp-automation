@@ -12,10 +12,11 @@ export type GeminiToolExecutor = (name: string, args: Record<string, unknown>) =
 export class GeminiService {
   async generateReply(context: ConversationContext, userText: string, tools: Array<{ name: string; description: string }>, executeTool?: GeminiToolExecutor): Promise<GeminiReply> {
     const config = getGeminiConfig();
-    const contents = [
-      ...context.messages.map(message => ({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.content }] })),
-      { role: "user", parts: [{ text: userText }] },
-    ];
+    const history = context.messages.map(message => ({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.content }] }));
+    const last = context.messages.at(-1);
+    const contents = last?.role === "user" && last.content.trim() === userText.trim()
+      ? history
+      : [...history, { role: "user", parts: [{ text: userText }] }];
     const headers = { "x-goog-api-key": config.apiKey, "Content-Type": "application/json" };
     const requestBody = {
       systemInstruction: { parts: [{ text: systemPrompt }] },
@@ -33,8 +34,8 @@ export class GeminiService {
       catch (error) { result = { error: error instanceof Error ? error.message : "Tool execution failed" }; }
       const followUpContents = [
         ...contents,
-        { role: "model", parts: [{ functionCall: { id: functionCall.id, name: functionCall.name, args } }] },
-        { role: "user", parts: [{ functionResponse: { id: functionCall.id, name: functionCall.name, response: { result } } }] },
+        { role: "model", parts: [{ functionCall: { ...(functionCall.id ? { id: functionCall.id } : {}), name: functionCall.name, args } }] },
+        { role: "user", parts: [{ functionResponse: { ...(functionCall.id ? { id: functionCall.id } : {}), name: functionCall.name, response: { result } } }] },
       ];
       const followUp = await axios.post(`${config.baseUrl}/models/${config.model}:generateContent`, { ...requestBody, contents: followUpContents }, { headers, timeout: 20_000 });
       const followUpParts = followUp.data?.candidates?.[0]?.content?.parts || [];
