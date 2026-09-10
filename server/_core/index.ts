@@ -10,6 +10,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerOperationsRoutes } from "../api/operationsRoutes";
+import { registerMarketingRoutes } from "../api/marketingRoutes";
 import { WhatsAppMessageService } from "../integrations/whatsapp/messages/messageService";
 import { WebhookProcessor } from "../integrations/whatsapp/webhook/webhookProcessor";
 import { AiAgent } from "../ai/aiAgent";
@@ -25,26 +26,19 @@ import { BlockedAwareMachineRepository } from "../appointments/databaseMachineRe
 import { BookingService } from "../appointments/bookingService";
 import { AutomationService } from "../automation/automationService";
 import { TreatmentCatalog } from "../appointments/treatments";
+import { AudienceService, CampaignService } from "../marketing/marketingService";
+import { DatabaseMarketingRepository } from "../marketing/databaseMarketingRepository";
+import { MarketingCampaignWorker } from "../marketing/campaignWorker";
 import { getDb } from "../db";
 import { appointments, patients, whatsappContacts, whatsappOptIns } from "../../drizzle/schema";
 import { DatabaseAppointmentRepository, DatabaseAutomationRepository, DatabaseContactRepository, DatabaseConversationRepository, DatabaseMessageRepository } from "../db/operationsRepository";
 import type { AutomationJob } from "../types/operations";
 
 function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise(resolve => {
-    const server = net.createServer();
-    server.listen(port, () => server.close(() => resolve(true)));
-    server.on("error", () => resolve(false));
-  });
+  return new Promise(resolve => { const server = net.createServer(); server.listen(port, () => server.close(() => resolve(true))); server.on("error", () => resolve(false)); });
 }
-
-async function findAvailablePort(startPort = 3000): Promise<number> {
-  for (let port = startPort; port < startPort + 20; port++) if (await isPortAvailable(port)) return port;
-  throw new Error(`No available port found starting from ${startPort}`);
-}
-
+async function findAvailablePort(startPort = 3000): Promise<number> { for (let port = startPort; port < startPort + 20; port++) if (await isPortAvailable(port)) return port; throw new Error(`No available port found starting from ${startPort}`); }
 function templateEnvKey(type: string): string { return `WHATSAPP_TEMPLATE_${type.replace(/([A-Z])/g, "_$1").toUpperCase()}`; }
-
 function parseTemplateComponents(type: string, variables: Record<string, string> = {}): unknown[] | undefined {
   const raw = process.env[`WHATSAPP_TEMPLATE_COMPONENTS_${type.replace(/([A-Z])/g, "_$1").toUpperCase()}`]?.trim();
   if (!raw) return undefined;
@@ -60,19 +54,12 @@ function parseTemplateComponents(type: string, variables: Record<string, string>
     return Array.isArray(replaced) ? replaced : undefined;
   } catch { throw new Error(`Invalid JSON in WHATSAPP_TEMPLATE_COMPONENTS_${type.replace(/([A-Z])/g, "_$1").toUpperCase()}`); }
 }
-
 function formatRiyadhDateTime(value: Date): { date: string; time: string } {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Riyadh", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(value);
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
   return { date: `${values.year}-${values.month}-${values.day}`, time: `${values.hour}:${values.minute}` };
 }
-
-function timeToMinutes(value: string): number {
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error("Preferred time must be HH:mm");
-  const [hour, minute] = value.split(":").map(Number);
-  return hour * 60 + minute;
-}
-
+function timeToMinutes(value: string): number { if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error("Preferred time must be HH:mm"); const [hour, minute] = value.split(":").map(Number); return hour * 60 + minute; }
 function selectAvailabilityWindow(slots: any[], preferredTime?: string, windowMinutes = 60): unknown {
   if (!preferredTime) return slots;
   const start = timeToMinutes(preferredTime);
@@ -81,10 +68,8 @@ function selectAvailabilityWindow(slots: any[], preferredTime?: string, windowMi
   const later = slots.filter(slot => timeToMinutes(formatRiyadhDateTime(new Date(slot.startsAt)).time) > end).slice(0, 3);
   return { requestedWindow: { from: preferredTime, to: `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}` }, availableSlots: inWindow.slice(0, 8), nearestLaterSlots: later };
 }
-
 function isStopKeyword(text: string): boolean { return /^(stop|unsubscribe|cancel|quit|remove|إلغاء|الغاء|وقف|إيقاف)$/i.test(text.trim()); }
 function isStartKeyword(text: string): boolean { return /^(start|unstop|subscribe|resume|ابدأ|ابدا|اشتراك)$/i.test(text.trim()); }
-
 async function updateMarketingConsent(contactId: string, optedIn: boolean): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("DATABASE_URL is not configured");
@@ -143,6 +128,10 @@ async function startServer() {
   });
 
   const bookingService = new BookingService(appointmentService, automationService);
+  const marketingRepository = new DatabaseMarketingRepository();
+  const marketingAudiences = new AudienceService(marketingRepository);
+  const marketingCampaigns = new CampaignService(marketingRepository, marketingAudiences);
+  const marketingWorker = new MarketingCampaignWorker(marketingRepository);
 
   const aiAgent = isGeminiConfigured() ? new AiAgent(new GeminiService(), conversationRepository, conversationService, {
     getVerifiedTreatment: async treatmentCode => { try { const treatment = treatmentCatalog.get(treatmentCode); return { code: treatment.code, name: treatment.name, durationMinutes: treatment.maxMinutes }; } catch { return null; } },
@@ -163,8 +152,10 @@ async function startServer() {
       getWhatsAppConfig();
       const client = createWhatsAppClient();
       await client.markMessageAsRead(messageId);
+      const conversation = await conversationRepository.getConversation(conversationId);
+      if (!conversation) throw new Error("WhatsApp conversation not found");
       if (isStopKeyword(text)) {
-        await updateMarketingConsent((await conversationRepository.getConversation(conversationId))!.contactId, false);
+        await updateMarketingConsent(conversation.contactId, false);
         const recipient = from.startsWith("+") ? from : `+${from}`;
         const sent = await client.sendTextMessage({ to: recipient, text: "You have been unsubscribed from marketing messages. Transactional appointment messages may still be sent.\nتم إلغاء الاشتراك من الرسائل التسويقية. قد تستمر رسائل المواعيد الضرورية." });
         const waMessageId = sent.messages?.[0]?.id;
@@ -172,7 +163,7 @@ async function startServer() {
         return;
       }
       if (isStartKeyword(text)) {
-        await updateMarketingConsent((await conversationRepository.getConversation(conversationId))!.contactId, true);
+        await updateMarketingConsent(conversation.contactId, true);
         const recipient = from.startsWith("+") ? from : `+${from}`;
         const sent = await client.sendTextMessage({ to: recipient, text: "Marketing messages are enabled again.\nتم تفعيل الرسائل التسويقية مرة أخرى." });
         const waMessageId = sent.messages?.[0]?.id;
@@ -197,6 +188,7 @@ async function startServer() {
     aiAgent,
     automations: automationService,
   });
+  registerMarketingRoutes(app, { repository: marketingRepository, campaigns: marketingCampaigns, audiences: marketingAudiences });
 
   app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
   if (process.env.NODE_ENV === "development") await setupVite(app, server); else serveStatic(app);
@@ -204,9 +196,15 @@ async function startServer() {
   const port = await findAvailablePort(preferredPort);
   if (port !== preferredPort) console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   server.listen(port, () => console.log(`Server running on http://localhost:${port}/`));
-  const runAutomationWorker = async () => { try { const processed = await automationService.processDue(new Date(), 50); if (processed > 0) console.log(`[Automation] processed ${processed} due job(s)`); } catch (error) { console.error("[Automation] worker error:", error); } };
-  void runAutomationWorker();
-  setInterval(() => { void runAutomationWorker(); }, 60_000);
+
+  const runWorkers = async () => {
+    try {
+      const [automationProcessed, marketingProcessed] = await Promise.all([automationService.processDue(new Date(), 50), marketingWorker.processDue(new Date(), 10)]);
+      if (automationProcessed > 0 || marketingProcessed > 0) console.log(`[Workers] automation=${automationProcessed} marketing=${marketingProcessed}`);
+    } catch (error) { console.error("[Workers] worker error:", error); }
+  };
+  void runWorkers();
+  setInterval(() => { void runWorkers(); }, 60_000);
 }
 
 startServer().catch(console.error);
