@@ -12,7 +12,7 @@ export class DatabaseMarketingRepository implements MarketingRepository {
   async createCampaign(draft: CampaignDraft): Promise<{ id: string }> {
     const db = await this.database();
     const templates = await db.select().from(whatsappTemplates).where(eq(whatsappTemplates.name, draft.templateName)).limit(10);
-    const template = templates.find(row => row.languageCode === draft.languageCode && row.status.toUpperCase() === "APPROVED");
+    const template = templates.find((row: any) => row.languageCode === draft.languageCode && row.status.toUpperCase() === "APPROVED");
     if (!template) throw new Error(`Approved WhatsApp template not found: ${draft.templateName}/${draft.languageCode}`);
     const result = await db.insert(whatsappCampaigns).values({ name: draft.name, templateId: template.id, languageCode: draft.languageCode, scheduledAt: draft.scheduledAt, status: draft.scheduledAt ? "SCHEDULED" : "DRAFT", consentRequired: draft.audience.consentRequired });
     return { id: String(result[0]?.insertId) };
@@ -21,15 +21,15 @@ export class DatabaseMarketingRepository implements MarketingRepository {
   async findAudience(filter: AudienceFilter): Promise<Array<{ contactId: string; phoneNumber: string; optedOut: boolean }>> {
     const db = await this.database();
     const contacts = await db.select({ id: whatsappContacts.id, phoneNumber: whatsappContacts.phoneNumber, optedOut: whatsappContacts.optedOut }).from(whatsappContacts);
-    if (!filter.consentRequired) return contacts.filter(row => !row.optedOut).map(row => ({ contactId: String(row.id), phoneNumber: row.phoneNumber, optedOut: Boolean(row.optedOut) }));
+    if (!filter.consentRequired) return contacts.filter((row: any) => !row.optedOut).map((row: any) => ({ contactId: String(row.id), phoneNumber: row.phoneNumber, optedOut: Boolean(row.optedOut) }));
     const optIns = await db.select({ contactId: whatsappOptIns.contactId, optedIn: whatsappOptIns.optedIn, recordedAt: whatsappOptIns.recordedAt }).from(whatsappOptIns);
     const latest = new Map<number, { optedIn: boolean; recordedAt: number }>();
-    for (const row of optIns) {
+    for (const row of optIns as any[]) {
       const timestamp = new Date(row.recordedAt).getTime();
       const previous = latest.get(row.contactId);
       if (!previous || timestamp > previous.recordedAt) latest.set(row.contactId, { optedIn: Boolean(row.optedIn), recordedAt: timestamp });
     }
-    return contacts.filter(row => !row.optedOut && latest.get(row.id)?.optedIn === true).map(row => ({ contactId: String(row.id), phoneNumber: row.phoneNumber, optedOut: Boolean(row.optedOut) }));
+    return contacts.filter((row: any) => !row.optedOut && latest.get(row.id)?.optedIn === true).map((row: any) => ({ contactId: String(row.id), phoneNumber: row.phoneNumber, optedOut: Boolean(row.optedOut) }));
   }
 
   async recordDelivery(campaignId: string, contactId: string, status: string): Promise<void> {
@@ -40,7 +40,7 @@ export class DatabaseMarketingRepository implements MarketingRepository {
   async getDueCampaigns(now: Date): Promise<DueCampaign[]> {
     const db = await this.database();
     const rows = await db.select({ id: whatsappCampaigns.id, name: whatsappCampaigns.name, templateName: whatsappTemplates.name, languageCode: whatsappCampaigns.languageCode, consentRequired: whatsappCampaigns.consentRequired, scheduledAt: whatsappCampaigns.scheduledAt }).from(whatsappCampaigns).innerJoin(whatsappTemplates, eq(whatsappTemplates.id, whatsappCampaigns.templateId)).where(eq(whatsappCampaigns.status, "SCHEDULED"));
-    return rows.filter(row => row.scheduledAt && new Date(row.scheduledAt).getTime() <= now.getTime()).map(row => ({ id: String(row.id), name: row.name, templateName: row.templateName, languageCode: row.languageCode, audience: { consentRequired: Boolean(row.consentRequired) } }));
+    return rows.filter((row: any) => row.scheduledAt && new Date(row.scheduledAt).getTime() <= now.getTime()).map((row: any) => ({ id: String(row.id), name: row.name, templateName: row.templateName, languageCode: row.languageCode, audience: { consentRequired: Boolean(row.consentRequired) } }));
   }
 
   async markCampaignStatus(id: string, status: string): Promise<void> {
@@ -65,11 +65,8 @@ export class DatabaseMarketingRepository implements MarketingRepository {
       const category = typeof template.category === "string" ? template.category : "UTILITY";
       const content = Array.isArray(template.components) ? JSON.stringify(template.components) : undefined;
       const existing = await db.select({ id: whatsappTemplates.id }).from(whatsappTemplates).where(eq(whatsappTemplates.name, name)).limit(1);
-      if (existing[0]) {
-        await db.update(whatsappTemplates).set({ languageCode, category, status: template.status, content }).where(eq(whatsappTemplates.id, existing[0].id));
-      } else {
-        await db.insert(whatsappTemplates).values({ name, languageCode, category, status: template.status, content });
-      }
+      if (existing[0]) await db.update(whatsappTemplates).set({ languageCode, category, status: template.status, content }).where(eq(whatsappTemplates.id, existing[0].id));
+      else await db.insert(whatsappTemplates).values({ name, languageCode, category, status: template.status, content });
       names.push(name);
     }
     return { synced: names.length, names };
