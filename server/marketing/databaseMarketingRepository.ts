@@ -1,6 +1,9 @@
+import axios from "axios";
 import { eq } from "drizzle-orm";
 import { auditLogs, whatsappCampaigns, whatsappContacts, whatsappOptIns, whatsappTemplates } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { getWhatsAppConfig } from "../integrations/whatsapp/config/env";
+import { CANONICAL_WHATSAPP } from "../types/operations";
 import type { AudienceFilter, CampaignDraft, MarketingRepository } from "./marketingService";
 
 export interface DueCampaign { id: string; name: string; templateName: string; languageCode: string; audience: AudienceFilter; }
@@ -43,6 +46,33 @@ export class DatabaseMarketingRepository implements MarketingRepository {
   async markCampaignStatus(id: string, status: string): Promise<void> {
     const db = await this.database();
     await db.update(whatsappCampaigns).set({ status }).where(eq(whatsappCampaigns.id, Number(id)));
+  }
+
+  async syncApprovedTemplates(): Promise<{ synced: number; names: string[] }> {
+    const config = getWhatsAppConfig();
+    const response = await axios.get(`${config.graphApiVersion === "" ? "https://graph.facebook.com" : `https://graph.facebook.com/${config.graphApiVersion}`}/${CANONICAL_WHATSAPP.wabaId}/message_templates`, {
+      headers: { Authorization: `Bearer ${config.accessToken}` },
+      params: { status: "APPROVED", limit: 100 },
+      timeout: 15_000,
+    });
+    const templates = Array.isArray(response.data?.data) ? response.data.data : [];
+    const db = await this.database();
+    const names: string[] = [];
+    for (const template of templates) {
+      if (typeof template?.name !== "string" || typeof template?.language !== "string" || typeof template?.status !== "string") continue;
+      const name = template.name;
+      const languageCode = template.language;
+      const category = typeof template.category === "string" ? template.category : "UTILITY";
+      const content = Array.isArray(template.components) ? JSON.stringify(template.components) : undefined;
+      const existing = await db.select({ id: whatsappTemplates.id }).from(whatsappTemplates).where(eq(whatsappTemplates.name, name)).limit(1);
+      if (existing[0]) {
+        await db.update(whatsappTemplates).set({ languageCode, category, status: template.status, content }).where(eq(whatsappTemplates.id, existing[0].id));
+      } else {
+        await db.insert(whatsappTemplates).values({ name, languageCode, category, status: template.status, content });
+      }
+      names.push(name);
+    }
+    return { synced: names.length, names };
   }
 
   private async database(): Promise<any> {
