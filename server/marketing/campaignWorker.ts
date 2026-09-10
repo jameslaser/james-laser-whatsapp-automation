@@ -1,6 +1,6 @@
 import { createWhatsAppClient } from "../integrations/whatsapp/client/whatsappClient";
 import { AudienceService, type MarketingRepository } from "./marketingService";
-import type { DatabaseMarketingRepository, DueCampaign } from "./databaseMarketingRepository";
+import type { DatabaseMarketingRepository } from "./databaseMarketingRepository";
 
 export class MarketingCampaignWorker {
   private readonly audiences: AudienceService;
