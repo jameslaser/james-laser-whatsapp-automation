@@ -1,28 +1,31 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { boolean, int, json, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
-/**
- * Core user table backing auth flow.
- * Extend this file with additional tables as your product grows.
- * Columns use camelCase to match both database fields and generated types.
- */
 export const users = mysqlTable("users", {
-  /**
-   * Surrogate primary key. Auto-incremented numeric value managed by the database.
-   * Use this for relations between tables.
-   */
-  id: int("id").autoincrement().primaryKey(),
-  /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
-  openId: varchar("openId", { length: 64 }).notNull().unique(),
-  name: text("name"),
-  email: varchar("email", { length: 320 }),
-  loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-  lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
+  id: int("id").autoincrement().primaryKey(), openId: varchar("openId", { length: 64 }).notNull().unique(), name: text("name"), email: varchar("email", { length: 320 }), loginMethod: varchar("loginMethod", { length: 64 }), role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(), lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
 });
+
+export const patients = mysqlTable("patients", { id: int("id").autoincrement().primaryKey(), fullName: varchar("fullName", { length: 255 }).notNull(), phoneNumber: varchar("phoneNumber", { length: 32 }).notNull().unique(), preferredLanguage: mysqlEnum("preferredLanguage", ["ar", "en"]).default("en").notNull(), tags: json("tags"), notes: text("notes"), createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull() });
+export const leads = mysqlTable("leads", { id: int("id").autoincrement().primaryKey(), fullName: varchar("fullName", { length: 255 }), phoneNumber: varchar("phoneNumber", { length: 32 }).notNull().unique(), source: varchar("source", { length: 64 }).default("whatsapp").notNull(), status: varchar("status", { length: 32 }).default("new").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull() });
+export const bookingRequests = mysqlTable("bookingRequests", { id: int("id").autoincrement().primaryKey(), patientId: int("patientId"), leadId: int("leadId"), treatmentCode: varchar("treatmentCode", { length: 64 }).notNull(), requestedDate: timestamp("requestedDate").notNull(), selectedStartsAt: timestamp("selectedStartsAt"), status: mysqlEnum("status", ["DRAFT", "OFFERED", "CONFIRMED", "CANCELLED"]).default("DRAFT").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull() });
+export const appointments = mysqlTable("appointments", { id: int("id").autoincrement().primaryKey(), patientId: int("patientId"), leadId: int("leadId"), bookingRequestId: int("bookingRequestId"), treatmentCode: varchar("treatmentCode", { length: 64 }).notNull(), startsAt: timestamp("startsAt").notNull(), endsAt: timestamp("endsAt").notNull(), machineName: varchar("machineName", { length: 64 }).notNull(), status: mysqlEnum("status", ["Confirmed", "Arrived", "Completed"]).notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull() });
+export const machines = mysqlTable("machines", { id: int("id").autoincrement().primaryKey(), name: varchar("name", { length: 64 }).notNull().unique(), active: boolean("active").default(true).notNull(), notes: text("notes"), createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull() });
+export const availabilities = mysqlTable("availabilities", { id: int("id").autoincrement().primaryKey(), staffId: int("staffId"), machineName: varchar("machineName", { length: 64 }), startsAt: timestamp("startsAt").notNull(), endsAt: timestamp("endsAt").notNull(), kind: mysqlEnum("kind", ["OPEN", "BLOCKED"]).notNull(), reason: text("reason"), createdAt: timestamp("createdAt").defaultNow().notNull() });
+export const notifications = mysqlTable("notifications", { id: int("id").autoincrement().primaryKey(), appointmentId: int("appointmentId"), patientId: int("patientId"), channel: mysqlEnum("channel", ["WHATSAPP", "INTERNAL"]).notNull(), type: varchar("type", { length: 64 }).notNull(), scheduledAt: timestamp("scheduledAt").notNull(), status: mysqlEnum("status", ["PENDING", "PROCESSING", "SENT", "FAILED", "CANCELLED"]).default("PENDING").notNull(), attempts: int("attempts").default(0).notNull(), lastAttemptAt: timestamp("lastAttemptAt"), error: text("error"), completedAt: timestamp("completedAt"), createdAt: timestamp("createdAt").defaultNow().notNull() });
+export const whatsappContacts = mysqlTable("whatsappContacts", { id: int("id").autoincrement().primaryKey(), phoneNumber: varchar("phoneNumber", { length: 32 }).notNull().unique(), patientId: int("patientId"), leadId: int("leadId"), optedOut: boolean("optedOut").default(false).notNull(), displayName: varchar("displayName", { length: 255 }), createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull() });
+export const whatsappConversations = mysqlTable("whatsappConversations", { id: int("id").autoincrement().primaryKey(), contactId: int("contactId").notNull(), status: mysqlEnum("status", ["AI_ACTIVE", "HUMAN_REQUIRED", "HUMAN_ACTIVE", "CLOSED"]).default("AI_ACTIVE").notNull(), aiPaused: boolean("aiPaused").default(false).notNull(), assignedStaffId: int("assignedStaffId"), lastActivityAt: timestamp("lastActivityAt").defaultNow().notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull() });
+export const whatsappMessages = mysqlTable("whatsappMessages", { id: int("id").autoincrement().primaryKey(), conversationId: int("conversationId").notNull(), contactId: int("contactId").notNull(), waMessageId: varchar("waMessageId", { length: 255 }).notNull().unique(), direction: mysqlEnum("direction", ["INBOUND", "OUTBOUND"]).notNull(), kind: varchar("kind", { length: 32 }).notNull(), body: text("body"), mediaId: varchar("mediaId", { length: 255 }), status: varchar("status", { length: 32 }).notNull(), rawPayload: json("rawPayload"), createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull() });
+export const whatsappTemplates = mysqlTable("whatsappTemplates", { id: int("id").autoincrement().primaryKey(), name: varchar("name", { length: 255 }).notNull().unique(), languageCode: varchar("languageCode", { length: 16 }).notNull(), category: varchar("category", { length: 64 }).notNull(), status: varchar("status", { length: 32 }).notNull(), content: text("content"), createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull() });
+export const whatsappCampaigns = mysqlTable("whatsappCampaigns", { id: int("id").autoincrement().primaryKey(), name: varchar("name", { length: 255 }).notNull(), templateId: int("templateId").notNull(), languageCode: varchar("languageCode", { length: 16 }).notNull(), scheduledAt: timestamp("scheduledAt"), status: varchar("status", { length: 32 }).default("DRAFT").notNull(), consentRequired: boolean("consentRequired").default(true).notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull() });
+export const whatsappAutomations = mysqlTable("whatsappAutomations", { id: int("id").autoincrement().primaryKey(), type: varchar("type", { length: 64 }).notNull(), appointmentId: int("appointmentId"), contactId: int("contactId"), scheduledAt: timestamp("scheduledAt").notNull(), status: mysqlEnum("status", ["PENDING", "PROCESSING", "SENT", "FAILED", "CANCELLED"]).default("PENDING").notNull(), attempts: int("attempts").default(0).notNull(), lastAttemptAt: timestamp("lastAttemptAt"), error: text("error"), completedAt: timestamp("completedAt"), idempotencyKey: varchar("idempotencyKey", { length: 255 }).notNull().unique(), createdAt: timestamp("createdAt").defaultNow().notNull() });
+export const whatsappWebhookEvents = mysqlTable("whatsappWebhookEvents", { id: int("id").autoincrement().primaryKey(), eventId: varchar("eventId", { length: 255 }).notNull().unique(), payload: json("payload").notNull(), processedAt: timestamp("processedAt").defaultNow().notNull() });
+export const whatsappOptIns = mysqlTable("whatsappOptIns", { id: int("id").autoincrement().primaryKey(), contactId: int("contactId").notNull(), optedIn: boolean("optedIn").notNull(), source: varchar("source", { length: 64 }).notNull(), recordedAt: timestamp("recordedAt").defaultNow().notNull() });
+export const whatsappAssignments = mysqlTable("whatsappAssignments", { id: int("id").autoincrement().primaryKey(), conversationId: int("conversationId").notNull(), staffId: int("staffId").notNull(), assignedAt: timestamp("assignedAt").defaultNow().notNull(), releasedAt: timestamp("releasedAt") });
+export const auditLogs = mysqlTable("auditLogs", { id: int("id").autoincrement().primaryKey(), action: varchar("action", { length: 64 }).notNull(), entityType: varchar("entityType", { length: 64 }).notNull(), entityId: varchar("entityId", { length: 64 }), actorId: int("actorId"), metadata: json("metadata"), createdAt: timestamp("createdAt").defaultNow().notNull() });
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
-
-// TODO: Add your tables here
+export type Patient = typeof patients.$inferSelect;
+export type Lead = typeof leads.$inferSelect;
+export type Appointment = typeof appointments.$inferSelect;
+export type WhatsAppConversation = typeof whatsappConversations.$inferSelect;
+export type WhatsAppMessage = typeof whatsappMessages.$inferSelect;
