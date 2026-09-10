@@ -1,10 +1,10 @@
-import { and, eq, gt, lt, or } from "drizzle-orm";
+import { and, desc, eq, gt, lt, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { appointments, availabilities, leads, machines, notifications, patients, whatsappAutomations, whatsappContacts, whatsappConversations, whatsappMessages, whatsappWebhookEvents } from "../../drizzle/schema";
+import { appointments, availabilities, leads, notifications, patients, whatsappAutomations, whatsappContacts, whatsappConversations, whatsappMessages, whatsappWebhookEvents } from "../../drizzle/schema";
 import type { AppointmentDraft, AutomationJob, AutomationStatus, IncomingMessageEvent, MachineName } from "../types/operations";
 import type { AppointmentRecord, AppointmentRepository } from "../appointments/appointmentService";
 import type { MachineRepository, MachineReservation } from "../appointments/machineService";
-import type { AutomationRepository } from "../automation/automationService";
+import { AUTOMATION_RECOVERY_MINUTES, MAX_AUTOMATION_ATTEMPTS, type AutomationRepository } from "../automation/automationService";
 import type { ContactRepository, ResolvedContact } from "../integrations/whatsapp/contacts/contactResolver";
 import type { ConversationRecord, ConversationRepository } from "../integrations/whatsapp/conversations/conversationService";
 import type { ContextMessage } from "../ai/conversationContext";
@@ -40,7 +40,6 @@ export class DatabaseContactRepository implements ContactRepository {
     if (!row) return null;
     return { id: String(row.id), phoneNumber: row.phoneNumber, kind: row.patientId ? "patient" : "lead", created: false };
   }
-
   async createLeadFromWhatsApp(phoneNumber: string): Promise<ResolvedContact> {
     const db = await database();
     return db.transaction(async (tx: any) => {
@@ -61,13 +60,12 @@ function toConversation(row: any): ConversationRecord {
 export class DatabaseConversationRepository implements ConversationRepository, AgentContextRepository {
   async list(limit = 50): Promise<ConversationRecord[]> {
     const db = await database();
-    const rows = await db.select().from(whatsappConversations).limit(limit);
+    const rows = await db.select().from(whatsappConversations).orderBy(desc(whatsappConversations.lastActivityAt)).limit(Math.min(Math.max(limit, 1), 100));
     return rows.map(toConversation);
   }
-
   async findOpenByContact(contactId: string): Promise<ConversationRecord | null> {
     const db = await database();
-    const rows = await db.select().from(whatsappConversations).where(and(eq(whatsappConversations.contactId, Number(contactId)), or(eq(whatsappConversations.status, "AI_ACTIVE"), eq(whatsappConversations.status, "HUMAN_REQUIRED"), eq(whatsappConversations.status, "HUMAN_ACTIVE")))).limit(1);
+    const rows = await db.select().from(whatsappConversations).where(and(eq(whatsappConversations.contactId, Number(contactId)), or(eq(whatsappConversations.status, "AI_ACTIVE"), eq(whatsappConversations.status, "HUMAN_REQUIRED"), eq(whatsappConversations.status, "HUMAN_ACTIVE")))).orderBy(desc(whatsappConversations.lastActivityAt)).limit(1);
     return rows[0] ? toConversation(rows[0]) : null;
   }
   async create(contactId: string): Promise<ConversationRecord> {
@@ -80,7 +78,12 @@ export class DatabaseConversationRepository implements ConversationRepository, A
   }
   async update(id: string, patch: Partial<ConversationRecord>): Promise<ConversationRecord> {
     const db = await database();
-    await db.update(whatsappConversations).set({ status: patch.status, aiPaused: patch.aiPaused, assignedStaffId: patch.assignedStaffId ? Number(patch.assignedStaffId) : undefined, lastActivityAt: patch.lastActivityAt }).where(eq(whatsappConversations.id, Number(id)));
+    const updates: Record<string, unknown> = {};
+    if (patch.status !== undefined) updates.status = patch.status;
+    if (patch.aiPaused !== undefined) updates.aiPaused = patch.aiPaused;
+    if (patch.assignedStaffId !== undefined) updates.assignedStaffId = patch.assignedStaffId ? Number(patch.assignedStaffId) : null;
+    if (patch.lastActivityAt !== undefined) updates.lastActivityAt = patch.lastActivityAt;
+    if (Object.keys(updates).length) await db.update(whatsappConversations).set(updates).where(eq(whatsappConversations.id, Number(id)));
     const rows = await db.select().from(whatsappConversations).where(eq(whatsappConversations.id, Number(id))).limit(1);
     if (!rows[0]) throw new Error("Conversation not found");
     return toConversation(rows[0]);
@@ -88,6 +91,7 @@ export class DatabaseConversationRepository implements ConversationRepository, A
   async addMessage(conversationId: string, messageId: string): Promise<void> {
     const db = await database();
     await db.update(whatsappMessages).set({ conversationId: Number(conversationId) }).where(eq(whatsappMessages.waMessageId, messageId));
+    await db.update(whatsappConversations).set({ lastActivityAt: new Date() }).where(eq(whatsappConversations.id, Number(conversationId)));
   }
   async getConversation(id: string): Promise<ConversationRecord | null> {
     const db = await database();
@@ -96,7 +100,7 @@ export class DatabaseConversationRepository implements ConversationRepository, A
   }
   async getRecentMessages(conversationId: string, limit: number): Promise<ContextMessage[]> {
     const db = await database();
-    const rows = await db.select().from(whatsappMessages).where(eq(whatsappMessages.conversationId, Number(conversationId))).limit(limit);
+    const rows = await db.select().from(whatsappMessages).where(eq(whatsappMessages.conversationId, Number(conversationId))).orderBy(desc(whatsappMessages.createdAt)).limit(Math.min(Math.max(limit, 1), 100));
     return rows.reverse().filter((row: any) => row.body).map((row: any) => ({ role: row.direction === "OUTBOUND" ? "assistant" : "user", content: String(row.body) }));
   }
   async getVerifiedFacts(_conversationId: string): Promise<Record<string, unknown>> { return {}; }
@@ -122,6 +126,7 @@ export class DatabaseMessageRepository implements MessageRepository {
     if (!contact[0]) throw new Error("Cannot persist outgoing message: WhatsApp contact does not exist");
     if (!input.conversationId) throw new Error("Cannot persist outgoing message: conversationId is required");
     await db.insert(whatsappMessages).values({ conversationId: Number(input.conversationId), contactId: contact[0].id, waMessageId: input.waMessageId, direction: "OUTBOUND", kind: "text", body: typeof input.payload.text === "string" ? input.payload.text : undefined, status: input.status, rawPayload: input.payload });
+    await db.update(whatsappConversations).set({ lastActivityAt: new Date() }).where(eq(whatsappConversations.id, Number(input.conversationId)));
   }
   async updateMessageStatus(waMessageId: string, status: string, raw: Record<string, unknown>): Promise<void> {
     const db = await database();
@@ -157,9 +162,7 @@ export class DatabaseAppointmentRepository implements AppointmentRepository {
     const rows = await db.select().from(appointments).where(and(lt(appointments.startsAt, endsAt), gt(appointments.endsAt, startsAt)));
     return rows.filter((row: any) => String(row.id) !== excludeId).map(toAppointment);
   }
-  async listNurseConflicts(startsAt: Date, endsAt: Date): Promise<AppointmentRecord[]> {
-    return this.listConflicts(startsAt, endsAt);
-  }
+  async listNurseConflicts(startsAt: Date, endsAt: Date): Promise<AppointmentRecord[]> { return this.listConflicts(startsAt, endsAt); }
   async create(input: AppointmentDraft & { endsAt: Date; machineName: NonNullable<AppointmentDraft["machineName"]> }): Promise<AppointmentRecord> {
     const db = await database();
     const provider = normalizeProvider(input.provider || process.env.HMS_PROVIDER || "NR011");
@@ -169,7 +172,7 @@ export class DatabaseAppointmentRepository implements AppointmentRepository {
     return toAppointment(rows[0]);
   }
   async confirm(id: string): Promise<AppointmentRecord> { return this.setStatus(id, "Confirmed"); }
-  async cancel(id: string): Promise<AppointmentRecord> { throw new Error("Cancelled is not an allowed appointment status under the active HMS policy"); }
+  async cancel(_id: string): Promise<AppointmentRecord> { throw new Error("Cancelled is not an allowed appointment status under the active HMS policy"); }
   async reschedule(id: string, startsAt: Date, endsAt: Date): Promise<AppointmentRecord> {
     const db = await database();
     await db.update(appointments).set({ startsAt, endsAt }).where(eq(appointments.id, Number(id)));
@@ -187,12 +190,49 @@ export class DatabaseAppointmentRepository implements AppointmentRepository {
 }
 
 export class DatabaseAutomationRepository implements AutomationRepository {
-  async findByIdempotencyKey(key: string): Promise<AutomationJob | null> { const db = await database(); const rows = await db.select().from(whatsappAutomations).where(eq(whatsappAutomations.idempotencyKey, key)).limit(1); return rows[0] ? this.toJob(rows[0]) : null; }
-  async create(job: AutomationJob): Promise<AutomationJob> { const db = await database(); const result = await db.insert(whatsappAutomations).values({ type: job.type, recipient: job.recipient, conversationId: job.conversationId ? Number(job.conversationId) : undefined, templateName: job.templateName, languageCode: job.languageCode, components: job.components, scheduledAt: job.scheduledAt, status: job.status, attempts: job.attempts, idempotencyKey: job.idempotencyKey }); const rows = await db.select().from(whatsappAutomations).where(eq(whatsappAutomations.id, Number(result[0]?.insertId))).limit(1); if (!rows[0]) throw new Error("Automation job was not created"); return this.toJob(rows[0]); }
-  async claim(id: string): Promise<boolean> { const db = await database(); const result = await db.update(whatsappAutomations).set({ status: "PROCESSING", attempts: 1, lastAttemptAt: new Date() }).where(and(eq(whatsappAutomations.id, Number(id)), eq(whatsappAutomations.status, "PENDING"))); return Number(result[0]?.affectedRows || 0) === 1; }
-  async markSent(id: string, completedAt: Date): Promise<void> { const db = await database(); await db.update(whatsappAutomations).set({ status: "SENT", completedAt }).where(eq(whatsappAutomations.id, Number(id))); }
-  async markFailed(id: string, error: string): Promise<void> { const db = await database(); await db.update(whatsappAutomations).set({ status: "FAILED", error }).where(eq(whatsappAutomations.id, Number(id))); }
+  async findByIdempotencyKey(key: string): Promise<AutomationJob | null> {
+    const db = await database();
+    const rows = await db.select().from(whatsappAutomations).where(eq(whatsappAutomations.idempotencyKey, key)).limit(1);
+    return rows[0] ? this.toJob(rows[0]) : null;
+  }
+  async create(job: AutomationJob): Promise<AutomationJob> {
+    const db = await database();
+    const result = await db.insert(whatsappAutomations).values({ type: job.type, recipient: job.recipient, conversationId: job.conversationId ? Number(job.conversationId) : undefined, templateName: job.templateName, languageCode: job.languageCode, components: job.components, scheduledAt: job.scheduledAt, status: job.status, attempts: job.attempts, idempotencyKey: job.idempotencyKey });
+    const rows = await db.select().from(whatsappAutomations).where(eq(whatsappAutomations.id, Number(result[0]?.insertId))).limit(1);
+    if (!rows[0]) throw new Error("Automation job was not created");
+    return this.toJob(rows[0]);
+  }
+  async claim(id: string): Promise<boolean> {
+    const db = await database();
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - AUTOMATION_RECOVERY_MINUTES * 60_000);
+    const result = await db.update(whatsappAutomations)
+      .set({ status: "PROCESSING", attempts: sql`${whatsappAutomations.attempts} + 1`, lastAttemptAt: now })
+      .where(and(eq(whatsappAutomations.id, Number(id)), or(eq(whatsappAutomations.status, "PENDING"), and(eq(whatsappAutomations.status, "PROCESSING"), lt(whatsappAutomations.lastAttemptAt, staleBefore)))))
+    ;
+    return Number(result[0]?.affectedRows || 0) === 1;
+  }
+  async markSent(id: string, completedAt: Date): Promise<void> {
+    const db = await database();
+    await db.update(whatsappAutomations).set({ status: "SENT", completedAt, error: null }).where(and(eq(whatsappAutomations.id, Number(id)), eq(whatsappAutomations.status, "PROCESSING")));
+  }
+  async markFailed(id: string, error: string): Promise<void> {
+    const db = await database();
+    const row = (await db.select({ attempts: whatsappAutomations.attempts }).from(whatsappAutomations).where(eq(whatsappAutomations.id, Number(id))).limit(1))[0];
+    if (!row) return;
+    const attempts = Number(row.attempts || 0);
+    if (attempts < MAX_AUTOMATION_ATTEMPTS) {
+      const delayMinutes = Math.min(60, 2 ** Math.max(0, attempts - 1));
+      await db.update(whatsappAutomations).set({ status: "PENDING", scheduledAt: new Date(Date.now() + delayMinutes * 60_000), error }).where(and(eq(whatsappAutomations.id, Number(id)), eq(whatsappAutomations.status, "PROCESSING")));
+    } else {
+      await db.update(whatsappAutomations).set({ status: "FAILED", error }).where(and(eq(whatsappAutomations.id, Number(id)), eq(whatsappAutomations.status, "PROCESSING")));
+    }
+  }
   async cancel(id: string): Promise<void> { const db = await database(); await db.update(whatsappAutomations).set({ status: "CANCELLED" }).where(eq(whatsappAutomations.id, Number(id))); }
-  async due(now: Date, limit: number): Promise<AutomationJob[]> { const db = await database(); const rows = await db.select().from(whatsappAutomations).where(and(eq(whatsappAutomations.status, "PENDING"), lt(whatsappAutomations.scheduledAt, now))).limit(limit); return rows.map((row: any) => this.toJob(row)); }
-  private toJob(row: any): AutomationJob { return { id: String(row.id), type: row.type, recipient: row.recipient || undefined, conversationId: row.conversationId ? String(row.conversationId) : undefined, templateName: row.templateName || undefined, languageCode: row.languageCode === "ar" || row.languageCode === "en" ? row.languageCode : undefined, components: row.components || undefined, scheduledAt: new Date(row.scheduledAt), status: row.status as AutomationStatus, attempts: row.attempts, lastAttemptAt: row.lastAttemptAt ? new Date(row.lastAttemptAt) : undefined, error: row.error || undefined, completedAt: row.completedAt ? new Date(row.completedAt) : undefined, idempotencyKey: row.idempotencyKey }; }
+  async due(now: Date, limit: number): Promise<AutomationJob[]> {
+    const db = await database();
+    const rows = await db.select().from(whatsappAutomations).where(and(eq(whatsappAutomations.status, "PENDING"), lt(whatsappAutomations.scheduledAt, now))).orderBy(whatsappAutomations.scheduledAt).limit(Math.min(Math.max(limit, 1), 100));
+    return rows.map((row: any) => this.toJob(row));
+  }
+  private toJob(row: any): AutomationJob { return { id: String(row.id), type: row.type, recipient: row.recipient || undefined, conversationId: row.conversationId ? String(row.conversationId) : undefined, templateName: row.templateName || undefined, languageCode: row.languageCode === "ar" || row.languageCode === "en" ? row.languageCode : undefined, components: row.components || undefined, scheduledAt: new Date(row.scheduledAt), status: row.status as AutomationStatus, attempts: Number(row.attempts || 0), lastAttemptAt: row.lastAttemptAt ? new Date(row.lastAttemptAt) : undefined, error: row.error || undefined, completedAt: row.completedAt ? new Date(row.completedAt) : undefined, idempotencyKey: row.idempotencyKey }; }
 }
