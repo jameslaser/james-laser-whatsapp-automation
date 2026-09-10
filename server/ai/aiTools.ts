@@ -3,10 +3,18 @@ import { MACHINE_NAMES, type MachineName } from "../types/operations";
 export interface AiToolContext {
   getVerifiedTreatment(treatmentCode: string): Promise<{ code: string; name: string; durationMinutes: number | null } | null>;
   checkAvailability(input: { treatmentCode: string; date: string }): Promise<unknown>;
+  createAppointment(input: {
+    conversationId: string;
+    treatmentCode: string;
+    date: string;
+    time: string;
+    customerName: string;
+    confirmedByCustomer: boolean;
+  }): Promise<unknown>;
   requestHumanHandoff(reason: string): Promise<void>;
 }
 
-export type AiToolName = "getVerifiedTreatment" | "checkAvailability" | "requestHumanHandoff";
+export type AiToolName = "getVerifiedTreatment" | "checkAvailability" | "createAppointment" | "requestHumanHandoff";
 
 export const aiTools = {
   getVerifiedTreatment: {
@@ -28,6 +36,22 @@ export const aiTools = {
         date: { type: "STRING", description: "Clinic date in YYYY-MM-DD format, Riyadh local date." },
       },
       required: ["treatmentCode", "date"],
+    },
+  },
+  createAppointment: {
+    name: "createAppointment",
+    description: "Create a real confirmed appointment only after the customer has explicitly confirmed the exact offered Riyadh date and time. The application rechecks availability, assigns an approved laser machine, uses provider NR011 JAMES FLORES, and persists the appointment. Never use this tool for a tentative or unconfirmed slot.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        conversationId: { type: "STRING", description: "Current WhatsApp conversation ID supplied by the application." },
+        treatmentCode: { type: "STRING", description: "Exact treatment code from the approved catalog." },
+        date: { type: "STRING", description: "Confirmed Riyadh clinic date in YYYY-MM-DD format." },
+        time: { type: "STRING", description: "Confirmed Riyadh clinic time in HH:mm format." },
+        customerName: { type: "STRING", description: "Customer's full name as provided in the conversation." },
+        confirmedByCustomer: { type: "BOOLEAN", description: "Must be true only when the customer explicitly confirmed the exact offered slot." },
+      },
+      required: ["conversationId", "treatmentCode", "date", "time", "customerName", "confirmedByCustomer"],
     },
   },
   requestHumanHandoff: {
