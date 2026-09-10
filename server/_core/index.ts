@@ -3,7 +3,7 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { eq } from "drizzle-orm";
-import { appointments, leads, patients, whatsappContacts } from "../../drizzle/schema";
+import { leads, patients, whatsappContacts } from "../../drizzle/schema";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { registerStorageProxy } from "./storageProxy";
@@ -37,29 +37,21 @@ function isPortAvailable(port: number): Promise<boolean> {
 }
 
 async function findAvailablePort(startPort = 3000): Promise<number> {
-  for (let port = startPort; port < startPort + 20; port++) {
-    if (await isPortAvailable(port)) return port;
-  }
+  for (let port = startPort; port < startPort + 20; port++) if (await isPortAvailable(port)) return port;
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
 function templateFor(type: string): string | undefined {
   const key = `WHATSAPP_TEMPLATE_${type.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase()}`;
-  const value = process.env[key]?.trim();
-  return value || undefined;
+  return process.env[key]?.trim() || undefined;
 }
 
 function componentsFor(type: string): unknown[] | undefined {
   const key = `WHATSAPP_TEMPLATE_COMPONENTS_${type.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase()}`;
   const raw = process.env[key]?.trim();
   if (!raw) return undefined;
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : undefined;
-  } catch {
-    console.warn(`[WhatsApp] Ignoring invalid JSON in ${key}`);
-    return undefined;
-  }
+  try { const parsed = JSON.parse(raw); return Array.isArray(parsed) ? parsed : undefined; }
+  catch { console.warn(`[WhatsApp] Ignoring invalid JSON in ${key}`); return undefined; }
 }
 
 async function resolvePatientForWhatsAppContact(contactId: string, customerName: string): Promise<{ patientId: string; phoneNumber: string }> {
@@ -71,12 +63,9 @@ async function resolvePatientForWhatsAppContact(contactId: string, customerName:
   let patientId = contact.patientId ? Number(contact.patientId) : 0;
   if (!patientId) {
     const existing = (await db.select({ id: patients.id }).from(patients).where(eq(patients.phoneNumber, contact.phoneNumber)).limit(1))[0];
-    if (existing) {
-      patientId = Number(existing.id);
-    } else {
-      const lead = contact.leadId
-        ? (await db.select({ fullName: leads.fullName }).from(leads).where(eq(leads.id, Number(contact.leadId))).limit(1))[0]
-        : undefined;
+    if (existing) patientId = Number(existing.id);
+    else {
+      const lead = contact.leadId ? (await db.select({ fullName: leads.fullName }).from(leads).where(eq(leads.id, Number(contact.leadId))).limit(1))[0] : undefined;
       const name = customerName.trim() || lead?.fullName?.trim();
       if (!name) throw new Error("Customer full name is required before booking");
       const inserted = await db.insert(patients).values({ fullName: name, phoneNumber: contact.phoneNumber });
@@ -109,21 +98,13 @@ async function startServer() {
 
   const aiAgent = isGeminiConfigured() ? new AiAgent(new GeminiService(), conversationRepository, conversationService, {
     getVerifiedTreatment: async treatmentCode => {
-      try {
-        const treatment = treatmentCatalog.get(treatmentCode);
-        return { code: treatment.code, name: treatment.name, durationMinutes: treatment.maxMinutes };
-      } catch {
-        return null;
-      }
+      try { const treatment = treatmentCatalog.get(treatmentCode); return { code: treatment.code, name: treatment.name, durationMinutes: treatment.maxMinutes }; }
+      catch { return null; }
     },
     checkAvailability: async input => {
       const date = new Date(`${input.date}T12:00:00+03:00`);
       if (Number.isNaN(date.getTime())) throw new Error("date must be YYYY-MM-DD");
-      return appointmentService.findAvailableSlots(date, input.treatmentCode).then(slots => slots.map(slot => ({
-        startsAt: slot.startsAt.toISOString(),
-        endsAt: slot.endsAt.toISOString(),
-        machineNames: slot.machineNames,
-      })));
+      return appointmentService.findAvailableSlots(date, input.treatmentCode).then(slots => slots.map(slot => ({ startsAt: slot.startsAt.toISOString(), endsAt: slot.endsAt.toISOString(), machineNames: slot.machineNames })));
     },
     bookAppointment: async input => {
       if (!input.confirmedByCustomer) return { booked: false, requiresConfirmation: true };
@@ -133,88 +114,38 @@ async function startServer() {
       if (Number.isNaN(start.getTime())) throw new Error("date/time must be a valid Riyadh appointment date and time");
       const treatment = treatmentCatalog.get(input.treatmentCode);
       const customer = await resolvePatientForWhatsAppContact(input.contactId, customerName);
-      const appointment = await appointmentService.createAppointment({
-        customerId: customer.patientId,
-        provider: "NR011 JAMES FLORES",
-        treatmentCode: treatment.code,
-        startsAt: start,
-        durationMinutes: treatment.maxMinutes,
-        machineName: input.machineName ? normalizeMachine(input.machineName) : undefined,
-        status: "Confirmed",
-      });
+      const appointment = await appointmentService.createAppointment({ customerId: customer.patientId, provider: "NR011 JAMES FLORES", treatmentCode: treatment.code, startsAt: start, durationMinutes: treatment.maxMinutes, machineName: input.machineName ? normalizeMachine(input.machineName) : undefined, status: "Confirmed" });
 
       const languageCode = (process.env.WHATSAPP_AUTOMATION_LANGUAGE_CODE?.trim() === "ar" ? "ar" : "en") as "ar" | "en";
       const automationTypes = ["appointmentConfirmation", "appointmentReminder24h", "sameDayReminder"] as const;
       for (const type of automationTypes) {
         const templateName = templateFor(type);
-        if (!templateName) {
-          console.warn(`[WhatsApp] No approved template configured for ${type}; appointment remains confirmed.`);
-          continue;
-        }
+        if (!templateName) { console.warn(`[WhatsApp] No approved template configured for ${type}; appointment remains confirmed.`); continue; }
         let scheduledAt = new Date();
         if (type === "appointmentReminder24h") scheduledAt = new Date(start.getTime() - 24 * 60 * 60_000);
-        if (type === "sameDayReminder") {
-          const minutesBefore = Math.max(15, Number(process.env.WHATSAPP_SAME_DAY_REMINDER_MINUTES_BEFORE || "180"));
-          scheduledAt = new Date(start.getTime() - minutesBefore * 60_000);
-        }
+        if (type === "sameDayReminder") { const minutesBefore = Math.max(15, Number(process.env.WHATSAPP_SAME_DAY_REMINDER_MINUTES_BEFORE || "180")); scheduledAt = new Date(start.getTime() - minutesBefore * 60_000); }
         if (scheduledAt.getTime() <= Date.now() && type !== "appointmentConfirmation") continue;
-        await automationService.schedule(
-          type,
-          scheduledAt,
-          `appointment:${appointment.id}:${type}`,
-          {
-            recipient: customer.phoneNumber,
-            conversationId: input.contactId,
-            templateName,
-            languageCode,
-            components: componentsFor(type),
-          },
-        );
+        await automationService.schedule(type, scheduledAt, `appointment:${appointment.id}:${type}`, { recipient: customer.phoneNumber, conversationId: input.conversationId, templateName, languageCode, components: componentsFor(type) });
       }
 
-      return {
-        booked: true,
-        appointment: {
-          id: appointment.id,
-          treatmentCode: appointment.treatmentCode,
-          startsAt: appointment.startsAt.toISOString(),
-          endsAt: appointment.endsAt.toISOString(),
-          machineName: appointment.machineName,
-          provider: appointment.provider,
-          status: appointment.status,
-        },
-      };
+      return { booked: true, appointment: { id: appointment.id, treatmentCode: appointment.treatmentCode, startsAt: appointment.startsAt.toISOString(), endsAt: appointment.endsAt.toISOString(), machineName: appointment.machineName, provider: appointment.provider, status: appointment.status } };
     },
     requestHumanHandoff: async reason => { console.warn(`[AI handoff] ${reason}`); },
   }) : undefined;
 
-  const webhookProcessor = new WebhookProcessor(
-    messageService,
-    contactResolver,
-    conversationService,
-    aiAgent && getOptionalWhatsAppConfig() ? async (event, conversation) => {
-      const reply = await aiAgent.respond(conversation.id, event.text || "");
-      if (!reply.text) return;
-      const response = await createWhatsAppClient().sendTextMessage({ to: event.from, text: reply.text });
-      const waMessageId = response.messages?.[0]?.id;
-      if (!waMessageId) throw new Error("Meta accepted no AI outbound message id");
-      await messageService.persistOutgoing({
-        waMessageId,
-        to: event.from,
-        conversationId: conversation.id,
-        payload: response as unknown as Record<string, unknown>,
-        status: response.messages?.[0]?.message_status || "accepted",
-      });
-    } : undefined,
-  );
+  const webhookProcessor = new WebhookProcessor(messageService, contactResolver, conversationService, aiAgent && getOptionalWhatsAppConfig() ? async (event, conversation) => {
+    const reply = await aiAgent.respond(conversation.id, event.text || "");
+    if (!reply.text) return;
+    const response = await createWhatsAppClient().sendTextMessage({ to: event.from, text: reply.text });
+    const waMessageId = response.messages?.[0]?.id;
+    if (!waMessageId) throw new Error("Meta accepted no AI outbound message id");
+    await messageService.persistOutgoing({ waMessageId, to: event.from, conversationId: conversation.id, payload: response as unknown as Record<string, unknown>, status: response.messages?.[0]?.message_status || "accepted" });
+  } : undefined);
 
   registerOperationsRoutes(app, {
     processWebhook: (payload, eventIds) => webhookProcessor.process(payload, eventIds),
     messages: messageService,
-    conversations: Object.assign(conversationService, {
-      list: (limit?: number) => conversationRepository.list(limit),
-      getConversation: (id: string) => conversationRepository.getConversation(id),
-    }),
+    conversations: Object.assign(conversationService, { list: (limit?: number) => conversationRepository.list(limit), getConversation: (id: string) => conversationRepository.getConversation(id) }),
     appointments: appointmentService,
     aiAgent,
     automations: automationService,
@@ -223,19 +154,14 @@ async function startServer() {
 
   app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
   if (process.env.NODE_ENV === "development") await setupVite(app, server); else serveStatic(app);
-
   const preferredPort = parseInt(process.env.PORT || "3000");
   const port = await findAvailablePort(preferredPort);
   if (port !== preferredPort) console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   server.listen(port, () => console.log(`Server running on http://localhost:${port}/`));
 
   const runAutomationWorker = async () => {
-    try {
-      const processed = await automationService.processDue(new Date(), 50);
-      if (processed) console.log(`[WhatsApp] Automation worker processed ${processed} job(s)`);
-    } catch (error) {
-      console.error("[WhatsApp] Automation worker failed:", error);
-    }
+    try { const processed = await automationService.processDue(new Date(), 50); if (processed) console.log(`[WhatsApp] Automation worker processed ${processed} job(s)`); }
+    catch (error) { console.error("[WhatsApp] Automation worker failed:", error); }
   };
   void runAutomationWorker();
   setInterval(() => { void runAutomationWorker(); }, 60_000);
