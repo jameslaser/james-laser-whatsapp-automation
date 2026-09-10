@@ -1,5 +1,4 @@
 import type { IncomingMessageEvent } from "../../../types/operations";
-import { DatabaseMessageRepository } from "../../../db/operationsRepository";
 
 export interface MessageRepository {
   hasWebhookEvent(eventId: string): Promise<boolean>;
@@ -8,8 +7,6 @@ export interface MessageRepository {
   saveOutgoingMessage(input: { waMessageId: string; to: string; conversationId?: string; payload: Record<string, unknown>; status: string }): Promise<void>;
   updateMessageStatus(waMessageId: string, status: string, raw: Record<string, unknown>): Promise<void>;
 }
-
-export { DatabaseMessageRepository };
 
 export class WhatsAppMessageService {
   constructor(private readonly repository: MessageRepository) {}
