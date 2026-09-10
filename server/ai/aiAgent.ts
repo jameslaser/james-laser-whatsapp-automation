@@ -29,6 +29,8 @@ export class AiAgent {
     }
 
     const context = await buildConversationContext(this.contextRepository, conversation);
+    const last = context.messages[context.messages.length - 1];
+    if (last?.role === "user" && last.content.trim() === userText.trim()) context.messages.pop();
     const reply = await this.gemini.generateReply(context, userText, Object.values(aiTools), this.tools, conversationId);
     if (reply.shouldEscalate) await this.conversations.pauseAi(conversationId);
     return { escalated: reply.shouldEscalate, text: reply.text, toolCalls: reply.toolCalls } as const;
