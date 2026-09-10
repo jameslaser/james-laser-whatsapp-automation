@@ -18,15 +18,9 @@ export const DEFAULT_TREATMENT_DURATIONS: TreatmentDuration[] = [
   { code: "mini-body-retouch", name: "Mini Body Retouch", minMinutes: 60, maxMinutes: 60 },
 ];
 function normalizeTreatment(value: string): string { return value.trim().toLowerCase().replace(/[_\s]+/g, "-").replace(/[^a-z0-9-]/g, ""); }
-const TREATMENT_ALIASES: Record<string, string> = { "mini-body": "mini-full-body", "mini-body-session": "mini-full-body", "full-body-session": "full-body", "full-back-and-shoulders": "full-back" };
+const TREATMENT_ALIASES: Record<string, string> = { "mini-body": "mini-full-body", "mini-body-session": "mini-full-body", "full-body-session": "full-body" };
 export class TreatmentCatalog {
   constructor(private readonly durations: TreatmentDuration[] = DEFAULT_TREATMENT_DURATIONS) {}
-  get(treatmentCodeOrName: string): TreatmentDuration {
-    const normalized = normalizeTreatment(treatmentCodeOrName);
-    const resolved = TREATMENT_ALIASES[normalized] || normalized;
-    const treatment = this.durations.find(item => normalizeTreatment(item.code) === resolved || normalizeTreatment(item.name) === resolved);
-    if (!treatment) throw new Error(`Unknown treatment: ${treatmentCodeOrName}`);
-    return treatment;
-  }
+  get(treatmentCodeOrName: string): TreatmentDuration { const normalized = normalizeTreatment(treatmentCodeOrName); const resolved = TREATMENT_ALIASES[normalized] || normalized; const treatment = this.durations.find(item => normalizeTreatment(item.code) === resolved || normalizeTreatment(item.name) === resolved); if (!treatment) throw new Error(`Unknown treatment: ${treatmentCodeOrName}`); return treatment; }
   calculateDuration(treatmentCodeOrName: string, preference: "minimum" | "maximum" = "maximum"): number { const treatment = this.get(treatmentCodeOrName); return preference === "minimum" ? treatment.minMinutes : treatment.maxMinutes; }
 }
