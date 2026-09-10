@@ -42,15 +42,11 @@ export class AiAgent {
       }
 
       if (name === "bookAppointment") {
-        const confirmedByCustomer = isExplicitBookingConfirmation(userText);
-        if (!confirmedByCustomer) {
-          return {
-            booked: false,
-            requiresConfirmation: true,
-            message: "Customer has not explicitly confirmed the exact appointment time yet.",
-          };
+        if (!isExplicitBookingConfirmation(userText)) {
+          return { booked: false, requiresConfirmation: true, message: "Customer has not explicitly confirmed the exact offered appointment time yet." };
         }
         return this.tools.bookAppointment({
+          conversationId,
           contactId: conversation.contactId,
           treatmentCode: String(args.treatmentCode || ""),
           date: String(args.date || ""),
