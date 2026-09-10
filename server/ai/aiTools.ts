@@ -30,8 +30,11 @@ export function isEscalationRequest(text: string): boolean {
 
 export function isExplicitBookingConfirmation(text: string): boolean {
   const normalized = text.trim().toLowerCase();
-  return /^(yes|yeah|yep|ok|okay|confirm|confirmed|book it|go ahead|do it|please book|نعم|تمام|موافق|أكد|تأكيد|احجز|احجزها|توكل)/i.test(normalized)
-    || /\b(confirm|confirmed|book it|go ahead)\b/i.test(normalized);
+  if (!normalized) return false;
+
+  // Keep booking confirmation intentionally narrow. A generic "ok/okay" can be
+  // an acknowledgement rather than consent to create an appointment.
+  return /^(yes|yeah|yep|confirm|confirmed|book it|go ahead|please book|نعم|موافق|موافقة|أكد|تأكيد|احجز|احجزها|توكل)(?:[.!،,\s].*)?$/i.test(normalized);
 }
 
 export function assertKnownMachine(machine: string): MachineName {
