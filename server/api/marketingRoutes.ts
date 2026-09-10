@@ -21,6 +21,12 @@ function body(req: Request): Record<string, unknown> { if (!req.body || typeof r
 function stringValue(value: unknown, name: string): string { if (typeof value !== "string" || !value.trim()) throw new Error(`${name} is required`); return value.trim(); }
 
 export function registerMarketingRoutes(app: Express, dependencies: MarketingDependencies): void {
+  app.post("/api/marketing/templates/sync", async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    try { return res.status(200).json(await dependencies.repository.syncApprovedTemplates()); }
+    catch (error) { return res.status(503).json({ error: error instanceof Error ? error.message : "Template synchronization failed" }); }
+  });
+
   app.post("/api/marketing/campaigns", async (req, res) => {
     if (!(await requireAdmin(req, res))) return;
     try {
