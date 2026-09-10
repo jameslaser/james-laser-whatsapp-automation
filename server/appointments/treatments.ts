@@ -1,9 +1,4 @@
-export interface TreatmentDuration {
-  code: string;
-  name: string;
-  minMinutes: number;
-  maxMinutes: number;
-}
+export interface TreatmentDuration { code: string; name: string; minMinutes: number; maxMinutes: number; }
 
 export const DEFAULT_TREATMENT_DURATIONS: TreatmentDuration[] = [
   { code: "full-face", name: "Full Face", minMinutes: 15, maxMinutes: 15 },
@@ -24,15 +19,15 @@ export const DEFAULT_TREATMENT_DURATIONS: TreatmentDuration[] = [
   { code: "mini-body-retouch", name: "Mini Body Retouch", minMinutes: 60, maxMinutes: 60 },
 ];
 
+function normalizeTreatment(value: string): string { return value.trim().toLowerCase().replace(/[_\s]+/g, "-").replace(/[^a-z0-9-]/g, ""); }
+
 export class TreatmentCatalog {
   constructor(private readonly durations: TreatmentDuration[] = DEFAULT_TREATMENT_DURATIONS) {}
-  get(treatmentCode: string): TreatmentDuration {
-    const treatment = this.durations.find(item => item.code === treatmentCode);
-    if (!treatment) throw new Error(`Unknown treatment: ${treatmentCode}`);
+  get(treatmentCodeOrName: string): TreatmentDuration {
+    const normalized = normalizeTreatment(treatmentCodeOrName);
+    const treatment = this.durations.find(item => normalizeTreatment(item.code) === normalized || normalizeTreatment(item.name) === normalized);
+    if (!treatment) throw new Error(`Unknown treatment: ${treatmentCodeOrName}`);
     return treatment;
   }
-  calculateDuration(treatmentCode: string, preference: "minimum" | "maximum" = "maximum"): number {
-    const treatment = this.get(treatmentCode);
-    return preference === "minimum" ? treatment.minMinutes : treatment.maxMinutes;
-  }
+  calculateDuration(treatmentCodeOrName: string, preference: "minimum" | "maximum" = "maximum"): number { const treatment = this.get(treatmentCodeOrName); return preference === "minimum" ? treatment.minMinutes : treatment.maxMinutes; }
 }
