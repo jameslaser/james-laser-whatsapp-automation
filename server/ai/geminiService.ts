@@ -10,8 +10,8 @@ export interface GeminiReply {
 }
 
 type GeminiFunctionCall = { id?: string; name?: string; args?: Record<string, unknown> };
-type GeminiPart = { text?: string; functionCall?: GeminiFunctionCall; functionResponse?: { name?: string; response?: Record<string, unknown> } };
-
+type GeminiFunctionResponse = { id?: string; name?: string; response?: Record<string, unknown> };
+type GeminiPart = { text?: string; functionCall?: GeminiFunctionCall; functionResponse?: GeminiFunctionResponse };
 type GeminiContent = { role: "user" | "model"; parts: GeminiPart[] };
 
 function normalizeToolArguments(value: unknown): Record<string, unknown> {
@@ -23,7 +23,12 @@ async function executeTool(name: AiToolName, args: Record<string, unknown>, tool
     case "getVerifiedTreatment":
       return tools.getVerifiedTreatment(String(args.treatmentCode || ""));
     case "checkAvailability":
-      return tools.checkAvailability({ treatmentCode: String(args.treatmentCode || ""), date: String(args.date || "") });
+      return tools.checkAvailability({
+        treatmentCode: String(args.treatmentCode || ""),
+        date: String(args.date || ""),
+        preferredTime: args.preferredTime ? String(args.preferredTime) : undefined,
+        windowMinutes: args.windowMinutes ? Number(args.windowMinutes) : undefined,
+      });
     case "createAppointment":
       return tools.createAppointment({
         conversationId,
@@ -66,16 +71,9 @@ export class GeminiService {
         {
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents,
-          tools: [{ functionDeclarations: Object.values(aiTools).map(tool => ({
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.parameters,
-          })) }],
+          tools: [{ functionDeclarations: Object.values(aiTools).map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters })) }],
         },
-        {
-          timeout: 20_000,
-          headers: { "x-goog-api-key": config.apiKey, "Content-Type": "application/json" },
-        },
+        { timeout: 20_000, headers: { "x-goog-api-key": config.apiKey, "Content-Type": "application/json" } },
       );
 
       const candidateContent = response.data?.candidates?.[0]?.content as GeminiContent | undefined;
@@ -98,9 +96,9 @@ export class GeminiService {
         try {
           const result = await executeTool(name, args, toolContext, conversationId);
           if (name === "requestHumanHandoff") shouldEscalate = true;
-          functionResponses.push({ functionResponse: { name, response: { result }, ...(functionCall.id ? { id: functionCall.id } : {}) } as any });
+          functionResponses.push({ functionResponse: { id: functionCall.id, name, response: { result } } });
         } catch (error) {
-          functionResponses.push({ functionResponse: { name, response: { error: error instanceof Error ? error.message : "Tool execution failed" }, ...(functionCall.id ? { id: functionCall.id } : {}) } as any });
+          functionResponses.push({ functionResponse: { id: functionCall.id, name, response: { error: error instanceof Error ? error.message : "Tool execution failed" } } });
         }
       }
       contents.push({ role: "user", parts: functionResponses });
@@ -119,7 +117,7 @@ STRICT RULES:
 - Only offer appointment times returned by checkAvailability.
 - Clinic hours are 1:00 PM to 10:00 PM Riyadh time and appointments use 15-minute slots.
 - When a customer asks for a booking, collect treatment, Riyadh date, preferred time/window, full name, and use the customer's WhatsApp number already attached to the conversation.
-- If the customer gives an approximate time such as "around 3 PM", check the practical window around that time and offer only actual available slots.
+- If the customer gives an approximate time such as "around 3 PM", call checkAvailability with preferredTime=15:00 and a 60-minute window. If no slot exists in that window, offer the nearest later available slot returned by the application.
 - Before createAppointment is called, present the exact available slot and ask the customer to explicitly confirm it. Never call createAppointment for a tentative slot.
 - createAppointment may only be used with confirmedByCustomer=true after explicit confirmation. The application performs a final availability check before writing the appointment.
 - Never tell the customer an appointment is confirmed until createAppointment returns success.
